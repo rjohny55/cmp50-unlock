@@ -1,0 +1,20 @@
+[Unit]
+# Optional. The card never lowers its own P-state request, so this supervisor
+# forces P8 while the GPU is idle and requests P16 as soon as work appears.
+# Runtime state only: stopping the unit releases the forced state.
+Description=CMP idle P-state governor (automatic idle/full state switching)
+After=multi-user.target
+
+[Service]
+Type=simple
+# Persistence keeps P8 stable when no client holds the GPU.
+# ExecStopPost releases via the script so a configured CMP_LOAD_CLOCK tuning
+# range is restored rather than cleared.
+ExecStartPre=/usr/bin/nvidia-smi -pm 1
+ExecStart=/opt/cmp50-unlock/idle-governor/cmp-idle-governor.sh
+ExecStopPost=/opt/cmp50-unlock/idle-governor/cmp-idle-governor.sh --release
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

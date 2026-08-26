@@ -2,6 +2,17 @@
 
 [English version](README.md) · [Инструкция агенту по установке](AGENT_INSTALL_RU.md) · [Оригинальное техническое руководство](docs/UPSTREAM_README.md) · [Исходный проект](https://github.com/xrip/cmp50hx-unlock)
 
+## Выберите версию карты
+
+| [CMP 50HX 10 ГБ](docs/10GB_RU.md) | [CMP 50HX 20 ГБ](docs/20GB_RU.md) |
+| --- | --- |
+| Исходная, наиболее полно проверенная конфигурация | Динамический WPR; четыре карты по 20480 МиБ проверены на ядре 6.8.0-137 |
+
+> Обновление 20 ГБ от 26 августа 2026: исправлена причина Booter `0x8d` —
+> фиксированная WPR-геометрия заменена на динамический per-BDF захват штатного
+> FWSEC диапазона. Compute и RT-count прошли на четырёх картах. ReBAR требует
+> холодной проверки, автоматический Gen2 пока экспериментальный.
+
 Независимая копия с чистой историей, содержащая исследования и патчи для NVIDIA CMP 50HX. Оригинальные исследования, патчи, измерения и технические пояснения созданы **[xrip](https://github.com/xrip)** в проекте **[xrip/cmp50hx-unlock](https://github.com/xrip/cmp50hx-unlock)**.
 
 В этом репозитории сохранены указание автора и ссылка на первоисточник. Материалы не выдаются за оригинальную работу владельца копии.
@@ -18,12 +29,15 @@
 | Подсистема MSI | `1462:371f` |
 | Исходники драйвера | NVIDIA open-gpu-kernel-modules `610.43.03` |
 
-Проект содержит четыре патча, применяемых строго по порядку:
+Проект содержит четыре патча, применяемых по стадиям:
 
 1. `01-cmp50-stockflow.patch` — ограниченный конкретной платой путь GSP/RM stockflow и изменение скорости выдачи инструкций SM.
 2. `02-cmp50-rt-core-count.patch` — отображение количества RT-ядер на стороне host/RM.
 3. `03-cmp50-rebar.patch` — настройка ReBAR для CMP50.
 4. `04-cmp50-pcie-gen2.patch` — перевод PCIe endpoint и upstream bridge в режим Gen2 с повторным согласованием линии.
+
+Сборщик поддерживает `CMP50_PATCH_STAGE=stockflow|rt|rebar|gen2`; безопасное
+значение по умолчанию — `rt`. Автоустановщик: `sudo ./install.sh --help`.
 
 Подробное объяснение регистров, уровней доказательности, результатов измерений и ограничений сохранено в [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md). Дополнительные исследовательские материалы находятся в [docs/CMP50HX.md](docs/CMP50HX.md).
 
@@ -44,7 +58,15 @@
 03-cmp50-rebar.patch
 04-cmp50-pcie-gen2.patch
 build.sh
+install.sh
+rollback.sh
+verify-live.sh
+verify/rm_issue_rate.c
+verify/verify.py
+idle-governor/
 decompil/gsp_tu10x_610.43.03.elf.i64
+docs/10GB_RU.md
+docs/20GB_RU.md
 docs/CMP50HX.md
 docs/UPSTREAM_README.md
 ```

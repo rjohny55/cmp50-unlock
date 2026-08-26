@@ -13,7 +13,7 @@ index b771a00..2d22626 100644
  
  #include <sound/core.h>             /* HDA struct snd_card */
  
-@@ -1362,6 +1366,127 @@ nv_schedule_uvm_resume_p2p(NvU8 *pUuid)
+@@ -1362,6 +1366,157 @@ nv_schedule_uvm_resume_p2p(NvU8 *pUuid)
  #endif
  }
  
@@ -43,6 +43,9 @@ index b771a00..2d22626 100644
 +    u32 cya0;
 +    u32 link_config;
 +    u32 pl_link_rate;
++    u32 link_cap;
++    u32 link_cap2;
++    u32 link_ctrl2;
 +    int ret;
 +    int attempt;
 +
@@ -68,6 +71,9 @@ index b771a00..2d22626 100644
 +    cya0 = readl(bar0 + 0x8c2c0);
 +    link_config = readl(bar0 + 0x8c040);
 +    pl_link_rate = readl(bar0 + 0x8c1c0);
++    link_cap = readl(bar0 + 0x88084);
++    link_cap2 = readl(bar0 + 0x880a4);
++    link_ctrl2 = readl(bar0 + 0x880a8);
 +    if (((cya0 & (1U << 2)) != 0U) ||
 +        (((link_config >> 18) & 3U) != 2U) ||
 +        ((pl_link_rate & 0x00060000U) != 0x00040000U))
@@ -76,6 +82,30 @@ index b771a00..2d22626 100644
 +                      "CMP50_GEN2: GSP policy missing CYA=%08x CFG=%08x "
 +                      "PL=%08x; retrain skipped\n",
 +                      cya0, link_config, pl_link_rate);
++        iounmap(bar0);
++        return;
++    }
++
++    /*
++     * GSP restores the CMP board's Gen1-only PCIe shadow after the early
++     * policy hook. Re-open the Gen2 capability immediately before link
++     * retraining. These are XVE PCI-config shadow registers, not the host's
++     * read-only PCI capability fields.
++     */
++    writel((link_cap & ~0x0000000fU) | 0x2U, bar0 + 0x88084);
++    writel(link_cap2 | 0x00000004U, bar0 + 0x880a4);
++    writel((link_ctrl2 & ~0x0000000fU) | 0x2U, bar0 + 0x880a8);
++    link_cap = readl(bar0 + 0x88084);
++    link_cap2 = readl(bar0 + 0x880a4);
++    link_ctrl2 = readl(bar0 + 0x880a8);
++    if (((link_cap & 0xfU) != 0x2U) ||
++        ((link_cap2 & 0x4U) == 0U) ||
++        ((link_ctrl2 & 0xfU) != 0x2U))
++    {
++        NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                      "CMP50_GEN2: XVE shadow update failed "
++                      "CAP=%08x CAP2=%08x CTL2=%08x\n",
++                      link_cap, link_cap2, link_ctrl2);
 +        iounmap(bar0);
 +        return;
 +    }

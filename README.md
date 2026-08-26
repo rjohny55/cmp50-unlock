@@ -2,6 +2,17 @@
 
 [Русская версия](README_RU.md) · [Agent installation runbook (RU)](AGENT_INSTALL_RU.md) · [Original technical guide](docs/UPSTREAM_README.md) · [Original project](https://github.com/xrip/cmp50hx-unlock)
 
+## Card variants
+
+| [CMP 50HX 10 GB (RU)](docs/10GB_RU.md) | [CMP 50HX 20 GB (RU)](docs/20GB_RU.md) |
+| --- | --- |
+| Original, most thoroughly validated configuration | Dynamic WPR support; four 20480 MiB cards validated on kernel 6.8.0-137 |
+
+The 20 GB update replaces fixed WPR geometry with fail-closed, per-BDF capture
+of the stock FWSEC range. Compute and the host RT-count stage pass on four
+cards. ReBAR still needs cold-boot validation on the 20 GB host, and automatic
+Gen2 link cycling remains experimental.
+
 An independent, clean-history mirror of research and patches for the NVIDIA CMP 50HX. The original research, patches, measurements, and technical explanations were created by **[xrip](https://github.com/xrip)** in **[xrip/cmp50hx-unlock](https://github.com/xrip/cmp50hx-unlock)**.
 
 This repository preserves attribution and links to the original author. It is not presented as original work by the mirror owner.
@@ -18,12 +29,16 @@ The patch set targets NVIDIA's open GPU kernel modules version `610.43.03` and t
 | MSI subsystem | `1462:371f` |
 | Driver source | NVIDIA open-gpu-kernel-modules `610.43.03` |
 
-The project contains four ordered patches:
+The project contains four incremental patches:
 
 1. `01-cmp50-stockflow.patch` — board-gated GSP/RM stockflow and SM issue-rate path.
 2. `02-cmp50-rt-core-count.patch` — host-side RT core count reporting.
 3. `03-cmp50-rebar.patch` — CMP50-specific ReBAR setup.
 4. `04-cmp50-pcie-gen2.patch` — endpoint and upstream-bridge PCIe Gen2 retraining.
+
+Select a build stage with
+`CMP50_PATCH_STAGE=stockflow|rt|rebar|gen2`; the safe default is `rt`.
+See `sudo ./install.sh --help` for the staged installer.
 
 The detailed reasoning, register descriptions, evidence levels, measurements, and limitations are preserved in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md). Additional research notes are available in [docs/CMP50HX.md](docs/CMP50HX.md).
 
@@ -44,7 +59,15 @@ The detailed reasoning, register descriptions, evidence levels, measurements, an
 03-cmp50-rebar.patch
 04-cmp50-pcie-gen2.patch
 build.sh
+install.sh
+rollback.sh
+verify-live.sh
+verify/rm_issue_rate.c
+verify/verify.py
+idle-governor/
 decompil/gsp_tu10x_610.43.03.elf.i64
+docs/10GB_RU.md
+docs/20GB_RU.md
 docs/CMP50HX.md
 docs/UPSTREAM_README.md
 ```

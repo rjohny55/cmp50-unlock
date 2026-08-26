@@ -11,24 +11,51 @@ readonly kernel_release="${KERNEL_RELEASE:-$(uname -r)}"
 readonly jobs="${JOBS:-$(nproc)}"
 readonly cache_dir="${CMP50_ALL_CACHE_DIR:-${script_dir}/cache}"
 readonly work_dir="${CMP50_ALL_WORK_DIR:-${script_dir}/work}"
-readonly artifact_dir="${CMP50_ALL_ARTIFACT_DIR:-${script_dir}/artifacts/${driver_version}-${kernel_release}}"
+readonly cmp50_patch_stage="${CMP50_PATCH_STAGE:-rt}"
+readonly artifact_dir="${CMP50_ALL_ARTIFACT_DIR:-${script_dir}/artifacts/${driver_version}-${kernel_release}-${cmp50_patch_stage}}"
 
 source_dir_input=''
 source_tarball=''
-patch_order=(
-    01-cmp50-stockflow.patch
-    02-cmp50-rt-core-count.patch
-    03-cmp50-rebar.patch
-    04-cmp50-pcie-gen2.patch
-)
+case "${cmp50_patch_stage}" in
+    stockflow)
+        patch_order=(01-cmp50-stockflow.patch)
+        ;;
+    rt)
+        patch_order=(
+            01-cmp50-stockflow.patch
+            02-cmp50-rt-core-count.patch
+        )
+        ;;
+    rebar)
+        patch_order=(
+            01-cmp50-stockflow.patch
+            02-cmp50-rt-core-count.patch
+            03-cmp50-rebar.patch
+        )
+        ;;
+    gen2)
+        patch_order=(
+            01-cmp50-stockflow.patch
+            02-cmp50-rt-core-count.patch
+            03-cmp50-rebar.patch
+            04-cmp50-pcie-gen2.patch
+        )
+        ;;
+    *)
+        printf 'unknown CMP50_PATCH_STAGE: %s (supported: stockflow, rt, rebar, gen2)\n' \
+            "${cmp50_patch_stage}" >&2
+        exit 2
+        ;;
+esac
 
 usage() {
     cat <<'EOF'
 usage: bash ./build.sh [--source-dir DIR | --source-tarball FILE]
 
 With no source option, the exact NVIDIA 610.43.03 source archive is downloaded
-and checked by SHA-256. The script builds artifacts only. It does not install,
-load, unload, or reset a GPU.
+and checked by SHA-256. Select an incremental patch set with
+CMP50_PATCH_STAGE=stockflow|rt|rebar|gen2 (default: rt). The script builds
+artifacts only. It does not install, load, unload, or reset a GPU.
 EOF
 }
 
@@ -121,10 +148,12 @@ for patch_file in "${patch_files[@]}"; do
     patch -d "${source_dir}" -p1 < "${patch_file}" >/dev/null
 done
 
-grep -q 'CMP50_GEN2: POLICY_PASS' \
-    "${source_dir}/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c"
-grep -q 'CMP50_GEN2: RETRAIN_PASS' \
-    "${source_dir}/kernel-open/nvidia/nv.c"
+if [[ "${cmp50_patch_stage}" == gen2 ]]; then
+    grep -q 'CMP50_GEN2: POLICY_PASS' \
+        "${source_dir}/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c"
+    grep -q 'CMP50_GEN2: RETRAIN_PASS' \
+        "${source_dir}/kernel-open/nvidia/nv.c"
+fi
 if grep -Eq '0x0008E1B[48C]U|0x008205(7C|80|20)U' "${patch_files[@]}"; then
     printf 'the patch contains a GA100-only PCIe register\n' >&2
     exit 13
@@ -146,10 +175,14 @@ cc -O2 -Wall -Wextra -Werror -std=c11 "${verify_source}" -o "${artifact_dir}/rm-
 [[ "$(modinfo -F vermagic "${artifact_dir}/nvidia.ko" | awk '{print $1}')" == "${kernel_release}" ]]
 grep -a -q 'CMP50_STOCKFLOW_' "${artifact_dir}/nvidia.ko"
 grep -a -q 'CMP50_GSP_READY_' "${artifact_dir}/nvidia.ko"
-grep -a -q 'CMP50_REBAR' "${artifact_dir}/nvidia.ko"
-grep -q 'NV2080_CTRL_GR_INFO_INDEX_RT_CORE_COUNT' "${source_dir}/src/nvidia/src/kernel/gpu/gr/kernel_graphics.c"
-grep -q 'data = 56U' "${source_dir}/src/nvidia/src/kernel/gpu/gr/kernel_graphics.c"
+if [[ "${cmp50_patch_stage}" == rebar || "${cmp50_patch_stage}" == gen2 ]]; then
+    grep -a -q 'CMP50_REBAR' "${artifact_dir}/nvidia.ko"
+fi
+if [[ "${cmp50_patch_stage}" != stockflow ]]; then
+    grep -q 'NV2080_CTRL_GR_INFO_INDEX_RT_CORE_COUNT' "${source_dir}/src/nvidia/src/kernel/gpu/gr/kernel_graphics.c"
+    grep -q 'data = 56U' "${source_dir}/src/nvidia/src/kernel/gpu/gr/kernel_graphics.c"
+fi
 
 (cd "${artifact_dir}" && sha256sum ./* > checksums.sha256)
-printf 'PASS_CMP50HX_ALL_BUILD\n%s\n' "${artifact_dir}"
+printf 'PASS_CMP50HX_%s_BUILD\n%s\n' "${cmp50_patch_stage^^}" "${artifact_dir}"
 printf 'Build source kept at %s for review.\n' "${source_dir}"
