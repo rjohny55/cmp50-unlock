@@ -12,9 +12,11 @@ The 20 GB update replaces fixed WPR geometry with fail-closed, per-BDF capture
 of the stock FWSEC range. Compute and the host RT-count stage pass on four
 cards. A 16 GiB BAR1 is boot-validated. Kernel 6.8.0-138 works with the ReBAR
 stage, while a direct boot of the experimental Gen2 stage caused GSP Booter
-`0x8d`. A later controlled v1 -> FLR -> v2 runtime test initialized all four
-GPUs, but the post-GSP XVE shadow writes failed and the links remained at
-Gen1. The Gen2 stage must not be deployed on a production system.
+`0x8d`. On kernel 137 a controlled two-module sequence proved that all four
+physical links can train at Gen2 (x4 + 3 x16), but the subsequent bridge cycle
+made the XVE BAR0 page unreadable and RM could not rebind, even after FLR. A
+reboot restored all GPUs at Gen1. The Gen2 stage must not be deployed on a
+production system.
 
 An independent, clean-history mirror of research and patches for the NVIDIA CMP 50HX. The original research, patches, measurements, and technical explanations were created by **[xrip](https://github.com/xrip)** in **[xrip/cmp50hx-unlock](https://github.com/xrip/cmp50hx-unlock)**.
 
@@ -69,6 +71,7 @@ verify-live.sh
 verify/rm_issue_rate.c
 verify/verify.py
 tools/cmp50-bar0-link-rate.c
+tools/cmp50-bar0-gen2-prepare.c
 idle-governor/
 decompil/gsp_tu10x_610.43.03.elf.i64
 docs/10GB_RU.md
