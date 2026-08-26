@@ -11,6 +11,7 @@ stage="rt"
 install_userland=0
 rebuild_initramfs=0
 enable_idle_governor=0
+allow_experimental_gen2=0
 
 log() { printf '[cmp50-install] %s\n' "$*"; }
 die() { printf '[cmp50-install] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -23,10 +24,12 @@ usage: sudo ./install.sh [options]
   --install-userland               install official NVIDIA 610.43.03 userspace
   --initramfs                      rebuild initramfs after installing modules
   --idle-governor                  install and enable the optional idle governor
+  --allow-experimental-gen2        acknowledge the known Gen2 boot risk
 
-The 20 GB path is proven through the rt stage. ReBAR still requires a cold-boot
-confirmation on each host. Gen2 is experimental and requires the documented
-two-pass link procedure; selecting gen2 does not run that procedure.
+The 20 GB rt and ReBAR stages are boot-validated on the reference host with
+kernels 6.8.0-137 and 6.8.0-138. Validate ReBAR on every new host. Gen2 is a
+research-only build: it failed GSP Booter initialization on 6.8.0-138 and this
+installer does not perform the required one-shot link procedure.
 EOF
 }
 
@@ -48,6 +51,10 @@ while [[ $# -gt 0 ]]; do
             enable_idle_governor=1
             shift
             ;;
+        --allow-experimental-gen2)
+            allow_experimental_gen2=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -59,6 +66,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${stage}" in stockflow|rt|rebar|gen2) ;; *) die "bad stage: ${stage}" ;; esac
+if [[ "${stage}" == gen2 && ${allow_experimental_gen2} -ne 1 ]]; then
+    die "gen2 is research-only and failed GSP boot on kernel 6.8.0-138; rerun with --allow-experimental-gen2 only with local recovery access"
+fi
 [[ ${EUID} -eq 0 ]] || die "run as root (sudo)"
 [[ -f "${repo_dir}/build.sh" ]] || die "run from a complete repository clone"
 [[ -d "/lib/modules/${kernel_release}/build" ]] || \

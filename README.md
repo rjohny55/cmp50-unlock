@@ -6,12 +6,13 @@
 
 | [CMP 50HX 10 GB (RU)](docs/10GB_RU.md) | [CMP 50HX 20 GB (RU)](docs/20GB_RU.md) |
 | --- | --- |
-| Original, most thoroughly validated configuration | Dynamic WPR support; four 20480 MiB cards validated on kernel 6.8.0-137 |
+| Original, most thoroughly validated configuration | Dynamic WPR support; four 20480 MiB cards validated on kernels 6.8.0-137 and 6.8.0-138 |
 
 The 20 GB update replaces fixed WPR geometry with fail-closed, per-BDF capture
 of the stock FWSEC range. Compute and the host RT-count stage pass on four
-cards. ReBAR still needs cold-boot validation on the 20 GB host, and automatic
-Gen2 link cycling remains experimental.
+cards. A 16 GiB BAR1 is boot-validated. Kernel 6.8.0-138 works with the ReBAR
+stage, while adding the experimental Gen2 retrain caused GSP Booter `0x8d` and
+must not be deployed on a production system.
 
 An independent, clean-history mirror of research and patches for the NVIDIA CMP 50HX. The original research, patches, measurements, and technical explanations were created by **[xrip](https://github.com/xrip)** in **[xrip/cmp50hx-unlock](https://github.com/xrip/cmp50hx-unlock)**.
 
@@ -37,8 +38,9 @@ The project contains four incremental patches:
 4. `04-cmp50-pcie-gen2.patch` — endpoint and upstream-bridge PCIe Gen2 retraining.
 
 Select a build stage with
-`CMP50_PATCH_STAGE=stockflow|rt|rebar|gen2`; the safe default is `rt`.
-See `sudo ./install.sh --help` for the staged installer.
+`CMP50_PATCH_STAGE=stockflow|rt|rebar|gen2`; the safe default is `rt`, and
+`rebar` is the next boot-validated stage. `gen2` is research-only and requires
+an explicit installer acknowledgement. See `sudo ./install.sh --help`.
 
 The detailed reasoning, register descriptions, evidence levels, measurements, and limitations are preserved in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md). Additional research notes are available in [docs/CMP50HX.md](docs/CMP50HX.md).
 
@@ -64,6 +66,7 @@ rollback.sh
 verify-live.sh
 verify/rm_issue_rate.c
 verify/verify.py
+tools/cmp50-bar0-link-rate.c
 idle-governor/
 decompil/gsp_tu10x_610.43.03.elf.i64
 docs/10GB_RU.md

@@ -5,8 +5,9 @@ readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly driver_version="610.43.03"
 readonly source_url="https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/${driver_version}.tar.gz"
 readonly source_sha256="9df87d753cd9c05aa0eedc462af9b35debb549a657136e863282f94c96ee2640"
-readonly patch_dir="${script_dir}/patches"
+readonly patch_dir="${script_dir}"
 readonly verify_source="${script_dir}/verify/rm_issue_rate.c"
+readonly gen2_helper_source="${script_dir}/tools/cmp50-bar0-link-rate.c"
 readonly kernel_release="${KERNEL_RELEASE:-$(uname -r)}"
 readonly jobs="${JOBS:-$(nproc)}"
 readonly cache_dir="${CMP50_ALL_CACHE_DIR:-${script_dir}/cache}"
@@ -169,6 +170,11 @@ for module in nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-peermem; do
 done
 
 cc -O2 -Wall -Wextra -Werror -std=c11 "${verify_source}" -o "${artifact_dir}/rm-issue-rate"
+if [[ "${cmp50_patch_stage}" == gen2 ]]; then
+    [[ -f "${gen2_helper_source}" ]]
+    cc -O2 -Wall -Wextra -Werror -std=c11 "${gen2_helper_source}" \
+        -o "${artifact_dir}/cmp50-bar0-link-rate"
+fi
 
 [[ -f "${artifact_dir}/nvidia.ko" ]]
 [[ "$(modinfo -F version "${artifact_dir}/nvidia.ko")" == "${driver_version}" ]]
