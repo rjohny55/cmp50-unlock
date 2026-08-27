@@ -103,6 +103,7 @@ sudo ./rollback.sh /var/lib/cmp50-unlock/backups/TIMESTAMP
 | Compute verifier | `PASS_CMP50HX_ISSUE_RATE_AND_COUNTS` |
 | Boot helper | `cmp50-gen2-second-pass.service`: `active (exited)` |
 | Переключение линии | Endpoint-first Retrain + root Retrain; без Link Disable |
+| Idle governor | 4/4 карты переходят в P8 645/405 МГц и возвращаются в P0 под нагрузкой |
 
 ## Важные ограничения
 

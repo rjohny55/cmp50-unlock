@@ -40,6 +40,13 @@ About **−61 W per idle card**. Verified live end to end: 30 s idle → forced 
 P8/1.8 W; a load released it within one poll to P0/full clocks; the load
 ending forced P8 again; stopping the unit released it to P16 cleanly.
 
+The four-card 20 GB X99 system was also validated on 2026-08-27. All cards
+entered P8 at 645/405 MHz after the 30 s debounce. Instantaneous aggregate
+board-power telemetry changed from about 285 W to 21–22 W. A CUDA matrix load
+released GPU0 to P0 at 100% utilization, completed successfully, and the card
+returned to P8 afterward. PCIe Gen2 and 16 GiB BAR1 remained active on all
+four cards.
+
 ## Install
 
 Either pass `--idle-governor` to `install.sh`, or enable it later:

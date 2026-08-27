@@ -101,6 +101,7 @@ sudo ./rollback.sh /var/lib/cmp50-unlock/backups/TIMESTAMP
 | Compute verifier | `PASS_CMP50HX_ISSUE_RATE_AND_COUNTS` |
 | Boot helper | `cmp50-gen2-second-pass.service`: `active (exited)` |
 | Link procedure | Endpoint-first Retrain + root Retrain; no Link Disable |
+| Idle governor | 4/4 cards reach P8 at 645/405 MHz and return to P0 on load |
 
 ## Important limitations
 
