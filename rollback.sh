@@ -23,6 +23,20 @@ for module in nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-peermem; do
     fi
 done
 cp -a "${backup_dir}/modules/." /
+systemctl disable cmp50-gen2-second-pass.service >/dev/null 2>&1 || true
+rm -f /usr/local/sbin/cmp50-gen2-second-pass \
+    /etc/systemd/system/cmp50-gen2-second-pass.service
+for path in usr/local/sbin/cmp50-gen2-second-pass \
+            etc/systemd/system/cmp50-gen2-second-pass.service; do
+    if [[ -f "${backup_dir}/${path}" ]]; then
+        install -D -m "$(stat -c '%a' "${backup_dir}/${path}")" \
+            "${backup_dir}/${path}" "/${path}"
+    fi
+done
+systemctl daemon-reload
+if [[ -f "${backup_dir}/cmp50-gen2-second-pass.enabled" ]]; then
+    systemctl enable cmp50-gen2-second-pass.service >/dev/null
+fi
 rm -f /etc/modprobe.d/cmp50-unlock.conf
 if [[ -f "${backup_dir}/cmp50-unlock.conf" ]]; then
     cp -a "${backup_dir}/cmp50-unlock.conf" /etc/modprobe.d/cmp50-unlock.conf

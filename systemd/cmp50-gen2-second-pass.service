@@ -1,0 +1,15 @@
+[Unit]
+Description=CMP 50HX PCIe Gen2 second-pass initialization
+Wants=systemd-udev-settle.service
+After=local-fs.target systemd-udev-settle.service
+Before=containerd.service docker.service display-manager.service nvidia-persistenced.service
+ConditionPathExists=/etc/modprobe.d/cmp50-unlock.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cmp50-gen2-second-pass
+RemainAfterExit=yes
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

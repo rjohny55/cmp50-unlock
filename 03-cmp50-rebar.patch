@@ -10,7 +10,7 @@ index 82338b8..a848f9f 100644
  #include <linux/kernel.h>
  #include <linux/workqueue.h>
  
-@@ -337,6 +338,125 @@ static void nv_get_pci_sysfs_config
+@@ -337,6 +338,208 @@ static void nv_get_pci_sysfs_config
  #endif
  }
  
@@ -41,8 +41,14 @@ index 82338b8..a848f9f 100644
 +    resource_size_t bar0_size;
 +    u8 __iomem *xve;
 +    u32 cya, cfg, cap, new_cfg, read_cya, read_cfg, read_cap;
++    u32 rebar_ctrl, rebar_ctrl_after;
++    u16 command;
 +    unsigned long sizes;
 +    unsigned int selector = cmp50_rebar_size;
++    unsigned int requested_size = selector + 6U;
++    unsigned int nbar, entry;
++    int rebar_pos;
++    NvBool bar1_found = NV_FALSE;
 +
 +    if ((pci_dev->vendor != PCI_VENDOR_ID_NVIDIA) ||
 +        (pci_dev->device != 0x1e09) ||
@@ -123,6 +129,83 @@ index 82338b8..a848f9f 100644
 +        return -EIO;
 +    }
 +
++    /*
++     * FLR resets the physical ReBAR control register to 256 MiB, while the
++     * Linux resource remains allocated at 16 GiB.  In that state the normal
++     * NVIDIA resize path sees the already-large resource and returns early.
++     * Re-arm only the exact BAR1 control entry when its existing allocation
++     * already matches the requested size; the address therefore does not
++     * move and no bridge window is changed.
++     */
++    rebar_pos = pci_find_ext_capability(pci_dev, PCI_EXT_CAP_ID_REBAR);
++    if (rebar_pos == 0)
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: physical ReBAR capability disappeared\n");
++        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++        iounmap(xve);
++        return -EIO;
++    }
++
++    pci_read_config_dword(pci_dev, rebar_pos + PCI_REBAR_CTRL,
++                          &rebar_ctrl);
++    nbar = (rebar_ctrl & PCI_REBAR_CTRL_NBAR_MASK) >>
++           PCI_REBAR_CTRL_NBAR_SHIFT;
++    for (entry = 0; entry < nbar; entry++)
++    {
++        pci_read_config_dword(pci_dev,
++            rebar_pos + PCI_REBAR_CTRL + entry * 8U, &rebar_ctrl);
++        if ((rebar_ctrl & PCI_REBAR_CTRL_BAR_IDX) == NV_GPU_BAR1)
++        {
++            bar1_found = NV_TRUE;
++            break;
++        }
++    }
++    if (!bar1_found)
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: BAR1 control entry not found\n");
++        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++        iounmap(xve);
++        return -EIO;
++    }
++
++    if ((pci_resource_len(pci_dev, NV_GPU_BAR1) ==
++         ((resource_size_t)1U << (requested_size + 20U))) &&
++        (((rebar_ctrl & PCI_REBAR_CTRL_BAR_SIZE) >>
++          PCI_REBAR_CTRL_BAR_SHIFT) != requested_size))
++    {
++        pci_read_config_word(pci_dev, PCI_COMMAND, &command);
++        pci_write_config_word(pci_dev, PCI_COMMAND,
++                              command & ~PCI_COMMAND_MEMORY);
++        rebar_ctrl = (rebar_ctrl & ~PCI_REBAR_CTRL_BAR_SIZE) |
++                     (requested_size << PCI_REBAR_CTRL_BAR_SHIFT);
++        pci_write_config_dword(pci_dev,
++            rebar_pos + PCI_REBAR_CTRL + entry * 8U, rebar_ctrl);
++        pci_read_config_dword(pci_dev,
++            rebar_pos + PCI_REBAR_CTRL + entry * 8U, &rebar_ctrl_after);
++        pci_write_config_word(pci_dev, PCI_COMMAND, command);
++        if ((rebar_ctrl_after & PCI_REBAR_CTRL_BAR_SIZE) !=
++            (rebar_ctrl & PCI_REBAR_CTRL_BAR_SIZE))
++        {
++            nv_printf(NV_DBG_ERRORS,
++                "NVRM: CMP50_REBAR: FLR re-arm failed %08x/%08x\n",
++                rebar_ctrl, rebar_ctrl_after);
++            writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++            writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++            readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++            iounmap(xve);
++            return -EIO;
++        }
++        nv_printf(NV_DBG_INFO,
++            "NVRM: CMP50_REBAR: FLR re-arm selector=%u control=%08x\n",
++            requested_size, rebar_ctrl_after);
++    }
++
 +    NVreg_EnableResizableBar = 1;
 +    nv_printf(NV_DBG_INFO,
 +        "NVRM: CMP50_REBAR: selector=%u mask=0x%lx "
@@ -136,7 +219,7 @@ index 82338b8..a848f9f 100644
  static int nv_resize_pcie_bars(struct pci_dev *pci_dev) {
  #if defined(NV_PCI_REBAR_GET_POSSIBLE_SIZES_PRESENT)
      u16 cmd;
-@@ -1992,6 +2112,12 @@ nv_pci_probe
+@@ -1992,6 +2195,12 @@ nv_pci_probe
          goto failed;
      }
  
@@ -149,7 +232,7 @@ index 82338b8..a848f9f 100644
      if ((pci_dev->irq == 0 && !pci_find_capability(pci_dev, PCI_CAP_ID_MSIX))
          && nv_treat_missing_irq_as_error())
      {
-@@ -2093,6 +2219,17 @@ nv_pci_probe
+@@ -2093,6 +2302,17 @@ nv_pci_probe
          goto err_zero_dev;
      }
  

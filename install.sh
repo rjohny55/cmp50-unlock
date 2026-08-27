@@ -24,12 +24,12 @@ usage: sudo ./install.sh [options]
   --install-userland               install official NVIDIA 610.43.03 userspace
   --initramfs                      rebuild initramfs after installing modules
   --idle-governor                  install and enable the optional idle governor
-  --allow-experimental-gen2        acknowledge the known Gen2 boot risk
+  --allow-experimental-gen2        acknowledge the host-specific Gen2 path
 
 The 20 GB rt and ReBAR stages are boot-validated on the reference host with
-kernels 6.8.0-137 and 6.8.0-138. Validate ReBAR on every new host. Gen2 is a
-research-only build: it failed GSP Booter initialization on 6.8.0-138 and this
-installer does not perform the required one-shot link procedure.
+kernels 6.8.0-137 and 6.8.0-138. Validate ReBAR on every new host. Gen2 uses a
+fail-closed second-pass FLR helper on hosts that remain at Gen1 after the first
+driver load. It is validated only on the reference X99 host with kernel 137.
 EOF
 }
 
@@ -67,7 +67,10 @@ done
 
 case "${stage}" in stockflow|rt|rebar|gen2) ;; *) die "bad stage: ${stage}" ;; esac
 if [[ "${stage}" == gen2 && ${allow_experimental_gen2} -ne 1 ]]; then
-    die "gen2 is research-only and failed GSP boot on kernel 6.8.0-138; rerun with --allow-experimental-gen2 only with local recovery access"
+    die "gen2 is host-specific; rerun with --allow-experimental-gen2 only with local recovery access"
+fi
+if [[ "${stage}" == gen2 && "${kernel_release}" != "6.8.0-137-generic" ]]; then
+    die "the automatic Gen2 second pass is validated only on kernel 6.8.0-137-generic"
 fi
 [[ ${EUID} -eq 0 ]] || die "run as root (sudo)"
 [[ -f "${repo_dir}/build.sh" ]] || die "run from a complete repository clone"
@@ -144,6 +147,15 @@ fi
 if [[ -f /etc/modprobe.d/cmp50-unlock.conf ]]; then
     cp -a /etc/modprobe.d/cmp50-unlock.conf "${backup_dir}/"
 fi
+for path in /usr/local/sbin/cmp50-gen2-second-pass \
+            /etc/systemd/system/cmp50-gen2-second-pass.service; do
+    if [[ -f "${path}" ]]; then
+        cp -a --parents "${path}" "${backup_dir}/"
+    fi
+done
+if systemctl is-enabled cmp50-gen2-second-pass.service >/dev/null 2>&1; then
+    : > "${backup_dir}/cmp50-gen2-second-pass.enabled"
+fi
 uname -a > "${backup_dir}/uname.txt"
 lspci -Dnn > "${backup_dir}/lspci.txt"
 
@@ -152,10 +164,25 @@ for module in nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-peermem; do
     [[ -f "${artifact_dir}/${module}.ko" ]] || continue
     install -m 0644 "${artifact_dir}/${module}.ko" "${install_dir}/${module}.ko"
 done
-if [[ "${stage}" == rebar || "${stage}" == gen2 ]]; then
+if [[ "${stage}" == gen2 ]]; then
+    install -m 0644 "${repo_dir}/config/cmp50-gen2.conf" \
+        /etc/modprobe.d/cmp50-unlock.conf
+    install -m 0755 "${repo_dir}/scripts/cmp50-gen2-second-pass.sh" \
+        /usr/local/sbin/cmp50-gen2-second-pass
+    install -m 0644 "${repo_dir}/systemd/cmp50-gen2-second-pass.service" \
+        /etc/systemd/system/cmp50-gen2-second-pass.service
+    systemctl daemon-reload
+    systemctl enable cmp50-gen2-second-pass.service
+elif [[ "${stage}" == rebar ]]; then
     printf 'options nvidia cmp50_rebar_size=8\n' > /etc/modprobe.d/cmp50-unlock.conf
 else
     rm -f /etc/modprobe.d/cmp50-unlock.conf
+fi
+if [[ "${stage}" != gen2 ]] && systemctl cat cmp50-gen2-second-pass.service >/dev/null 2>&1; then
+    systemctl disable cmp50-gen2-second-pass.service >/dev/null 2>&1 || true
+    rm -f /usr/local/sbin/cmp50-gen2-second-pass \
+        /etc/systemd/system/cmp50-gen2-second-pass.service
+    systemctl daemon-reload
 fi
 depmod -a "${kernel_release}"
 [[ "$(modinfo -F version "${install_dir}/nvidia.ko")" == "${driver_version}" ]] || \

@@ -13,7 +13,7 @@ index b771a00..2d22626 100644
  
  #include <sound/core.h>             /* HDA struct snd_card */
  
-@@ -1362,6 +1366,157 @@ nv_schedule_uvm_resume_p2p(NvU8 *pUuid)
+@@ -1362,6 +1366,220 @@ nv_schedule_uvm_resume_p2p(NvU8 *pUuid)
  #endif
  }
  
@@ -36,16 +36,17 @@ index b771a00..2d22626 100644
 +    struct pci_dev *gpu = nvl->pci_dev;
 +    struct pci_dev *upstream;
 +    void __iomem *bar0;
++    u16 gpu_ctl;
 +    u16 gpu_ctl2;
-+    u16 upstream_ctl2;
 +    u16 upstream_ctl;
++    u16 upstream_ctl2;
++    u16 gpu_ctl2_readback;
++    u16 upstream_ctl2_readback;
 +    u16 link_status = 0;
++    u16 upstream_status = 0;
 +    u32 cya0;
 +    u32 link_config;
 +    u32 pl_link_rate;
-+    u32 link_cap;
-+    u32 link_cap2;
-+    u32 link_ctrl2;
 +    int ret;
 +    int attempt;
 +
@@ -71,9 +72,6 @@ index b771a00..2d22626 100644
 +    cya0 = readl(bar0 + 0x8c2c0);
 +    link_config = readl(bar0 + 0x8c040);
 +    pl_link_rate = readl(bar0 + 0x8c1c0);
-+    link_cap = readl(bar0 + 0x88084);
-+    link_cap2 = readl(bar0 + 0x880a4);
-+    link_ctrl2 = readl(bar0 + 0x880a8);
 +    if (((cya0 & (1U << 2)) != 0U) ||
 +        (((link_config >> 18) & 3U) != 2U) ||
 +        ((pl_link_rate & 0x00060000U) != 0x00040000U))
@@ -86,83 +84,148 @@ index b771a00..2d22626 100644
 +        return;
 +    }
 +
-+    /*
-+     * GSP restores the CMP board's Gen1-only PCIe shadow after the early
-+     * policy hook. Re-open the Gen2 capability immediately before link
-+     * retraining. These are XVE PCI-config shadow registers, not the host's
-+     * read-only PCI capability fields.
-+     */
-+    writel((link_cap & ~0x0000000fU) | 0x2U, bar0 + 0x88084);
-+    writel(link_cap2 | 0x00000004U, bar0 + 0x880a4);
-+    writel((link_ctrl2 & ~0x0000000fU) | 0x2U, bar0 + 0x880a8);
-+    link_cap = readl(bar0 + 0x88084);
-+    link_cap2 = readl(bar0 + 0x880a4);
-+    link_ctrl2 = readl(bar0 + 0x880a8);
-+    if (((link_cap & 0xfU) != 0x2U) ||
-+        ((link_cap2 & 0x4U) == 0U) ||
-+        ((link_ctrl2 & 0xfU) != 0x2U))
-+    {
-+        NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
-+                      "CMP50_GEN2: XVE shadow update failed "
-+                      "CAP=%08x CAP2=%08x CTL2=%08x\n",
-+                      link_cap, link_cap2, link_ctrl2);
-+        iounmap(bar0);
-+        return;
-+    }
-+
-+    writel(6U, bar0 + 0x8872c);
-+    (void)readl(bar0 + 0x8872c);
-+    iounmap(bar0);
-+    msleep(50);
-+
++    ret = pcie_capability_read_word(gpu, PCI_EXP_LNKCTL, &gpu_ctl);
++    if (ret)
++        goto capability_error_unmap;
 +    ret = pcie_capability_read_word(gpu, PCI_EXP_LNKCTL2, &gpu_ctl2);
 +    if (ret)
-+        goto capability_error;
++        goto capability_error_unmap;
++    ret = pcie_capability_read_word(upstream, PCI_EXP_LNKCTL,
++                                    &upstream_ctl);
++    if (ret)
++        goto capability_error_unmap;
 +    ret = pcie_capability_read_word(upstream, PCI_EXP_LNKCTL2,
 +                                    &upstream_ctl2);
 +    if (ret)
-+        goto capability_error;
++        goto capability_error_unmap;
 +
++    /*
++     * Program both target speeds, ask the endpoint for Recovery first, then
++     * request Recovery at the downstream port.  Preserve ASPM exactly: the
++     * tested Intel IIO link changes speed from L1, while clearing ASPM before
++     * Retrain made this 20 GB endpoint return to Gen1.
++     */
 +    gpu_ctl2 = (gpu_ctl2 & ~PCI_EXP_LNKCTL2_TLS) |
 +               PCI_EXP_LNKCTL2_TLS_5_0GT;
 +    upstream_ctl2 = (upstream_ctl2 & ~PCI_EXP_LNKCTL2_TLS) |
 +                    PCI_EXP_LNKCTL2_TLS_5_0GT;
 +    ret = pcie_capability_write_word(gpu, PCI_EXP_LNKCTL2, gpu_ctl2);
 +    if (ret)
-+        goto capability_error;
++        goto restore_ctl_unmap;
 +    ret = pcie_capability_write_word(upstream, PCI_EXP_LNKCTL2,
 +                                     upstream_ctl2);
 +    if (ret)
-+        goto capability_error;
-+    ret = pcie_capability_read_word(upstream, PCI_EXP_LNKCTL, &upstream_ctl);
++        goto restore_ctl_unmap;
++    ret = pcie_capability_read_word(gpu, PCI_EXP_LNKCTL2,
++                                    &gpu_ctl2_readback);
 +    if (ret)
-+        goto capability_error;
++        goto restore_ctl_unmap;
++    ret = pcie_capability_read_word(upstream, PCI_EXP_LNKCTL2,
++                                    &upstream_ctl2_readback);
++    if (ret)
++        goto restore_ctl_unmap;
++    if (((gpu_ctl2_readback & PCI_EXP_LNKCTL2_TLS) !=
++         PCI_EXP_LNKCTL2_TLS_5_0GT) ||
++        ((upstream_ctl2_readback & PCI_EXP_LNKCTL2_TLS) !=
++         PCI_EXP_LNKCTL2_TLS_5_0GT))
++    {
++        NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                      "CMP50_GEN2: target readback failed GPU=%04x ROOT=%04x\n",
++                      gpu_ctl2_readback, upstream_ctl2_readback);
++        goto restore_ctl_unmap;
++    }
++
++    writel(6U, bar0 + 0x8872c);
++    (void)readl(bar0 + 0x8872c);
++    iounmap(bar0);
++    bar0 = NULL;
++    msleep(20);
++
++    ret = pcie_capability_write_word(gpu, PCI_EXP_LNKCTL,
++                                     gpu_ctl | PCI_EXP_LNKCTL_RL);
++    if (ret)
++        goto restore_ctl;
++    msleep(50);
 +    ret = pcie_capability_write_word(upstream, PCI_EXP_LNKCTL,
 +                                     upstream_ctl | PCI_EXP_LNKCTL_RL);
 +    if (ret)
-+        goto capability_error;
++        goto restore_ctl;
 +
-+    for (attempt = 0; attempt < 20; attempt++)
++    for (attempt = 0; attempt < 200; attempt++)
 +    {
-+        msleep(100);
++        msleep(10);
 +        ret = pcie_capability_read_word(gpu, PCI_EXP_LNKSTA, &link_status);
++        (void)pcie_capability_read_word(upstream, PCI_EXP_LNKSTA,
++                                        &upstream_status);
 +        if (!ret &&
 +            ((link_status & PCI_EXP_LNKSTA_CLS) >=
 +             PCI_EXP_LNKSTA_CLS_5_0GB))
 +        {
 +            NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
-+                          "CMP50_GEN2: RETRAIN_PASS status=%04x attempt=%d\n",
-+                          link_status, attempt + 1);
++                          "CMP50_GEN2: RETRAIN_PASS GPU=%04x ROOT=%04x "
++                          "attempt=%d\n",
++                          link_status, upstream_status, attempt + 1);
++            (void)pcie_capability_write_word(gpu, PCI_EXP_LNKCTL, gpu_ctl);
++            (void)pcie_capability_write_word(upstream, PCI_EXP_LNKCTL,
++                                              upstream_ctl);
++            return;
++        }
++    }
++
++    /*
++     * The 20 GB board can expose the complete Gen2 policy before its RM PCIe
++     * state accepts the first Recovery request.  A later identical request
++     * succeeds without dropping DL_Active, so retry once after the initial
++     * two-second observation window.
++     */
++    NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                  "CMP50_GEN2: RETRAIN_RETRY GPU=%04x ROOT=%04x\n",
++                  link_status, upstream_status);
++    msleep(500);
++    ret = pcie_capability_write_word(gpu, PCI_EXP_LNKCTL,
++                                     gpu_ctl | PCI_EXP_LNKCTL_RL);
++    if (ret)
++        goto restore_ctl;
++    msleep(50);
++    ret = pcie_capability_write_word(upstream, PCI_EXP_LNKCTL,
++                                     upstream_ctl | PCI_EXP_LNKCTL_RL);
++    if (ret)
++        goto restore_ctl;
++
++    for (attempt = 0; attempt < 200; attempt++)
++    {
++        msleep(10);
++        ret = pcie_capability_read_word(gpu, PCI_EXP_LNKSTA, &link_status);
++        (void)pcie_capability_read_word(upstream, PCI_EXP_LNKSTA,
++                                        &upstream_status);
++        if (!ret &&
++            ((link_status & PCI_EXP_LNKSTA_CLS) >=
++             PCI_EXP_LNKSTA_CLS_5_0GB))
++        {
++            NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                          "CMP50_GEN2: RETRAIN_PASS GPU=%04x ROOT=%04x "
++                          "attempt=%d\n",
++                          link_status, upstream_status, attempt + 201);
++            (void)pcie_capability_write_word(gpu, PCI_EXP_LNKCTL, gpu_ctl);
++            (void)pcie_capability_write_word(upstream, PCI_EXP_LNKCTL,
++                                              upstream_ctl);
 +            return;
 +        }
 +    }
 +
 +    NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
-+                  "CMP50_GEN2: RETRAIN_FAIL status=%04x ret=%d\n",
-+                  link_status, ret);
++                  "CMP50_GEN2: RETRAIN_FAIL GPU=%04x ROOT=%04x ret=%d\n",
++                  link_status, upstream_status, ret);
++restore_ctl:
++    (void)pcie_capability_write_word(gpu, PCI_EXP_LNKCTL, gpu_ctl);
++    (void)pcie_capability_write_word(upstream, PCI_EXP_LNKCTL, upstream_ctl);
 +    return;
 +
-+capability_error:
++restore_ctl_unmap:
++    (void)pcie_capability_write_word(upstream, PCI_EXP_LNKCTL, upstream_ctl);
++    (void)pcie_capability_write_word(gpu, PCI_EXP_LNKCTL, gpu_ctl);
++capability_error_unmap:
++    iounmap(bar0);
 +    NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
 +                  "CMP50_GEN2: PCI capability error=%d; retrain stopped\n",
 +                  ret);
@@ -171,7 +234,7 @@ index b771a00..2d22626 100644
  /*
   * Brings up the device on the first file open. Assumes nvl->ldata_lock is held.
   */
-@@ -1521,6 +1646,8 @@ int nv_start_device(nv_state_t *nv, nvidia_stack_t *sp)
+@@ -1521,6 +1739,8 @@ int nv_start_device(nv_state_t *nv, nvidia_stack_t *sp)
          goto failed_release_irq;
      }
  
