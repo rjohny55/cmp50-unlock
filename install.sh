@@ -12,6 +12,7 @@ install_userland=0
 rebuild_initramfs=0
 enable_idle_governor=0
 allow_experimental_gen2=0
+ai_manager_data_dir="/opt/stacks/ai-server-manager/data"
 
 log() { printf '[cmp50-install] %s\n' "$*"; }
 die() { printf '[cmp50-install] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -24,6 +25,8 @@ usage: sudo ./install.sh [options]
   --install-userland               install official NVIDIA 610.43.03 userspace
   --initramfs                      rebuild initramfs after installing modules
   --idle-governor                  install and enable the optional idle governor
+  --ai-manager-data-dir PATH       host data path used by AI Server Manager
+                                   (default: /opt/stacks/ai-server-manager/data)
   --allow-experimental-gen2        acknowledge the host-specific Gen2 path
 
 The 20 GB rt and ReBAR stages are boot-validated on the reference host with
@@ -51,6 +54,10 @@ while [[ $# -gt 0 ]]; do
             enable_idle_governor=1
             shift
             ;;
+        --ai-manager-data-dir)
+            ai_manager_data_dir="${2:?--ai-manager-data-dir needs a value}"
+            shift 2
+            ;;
         --allow-experimental-gen2)
             allow_experimental_gen2=1
             shift
@@ -73,6 +80,13 @@ if [[ "${stage}" == gen2 && "${kernel_release}" != "6.8.0-137-generic" ]]; then
     die "the automatic Gen2 second pass is validated only on kernel 6.8.0-137-generic"
 fi
 [[ ${EUID} -eq 0 ]] || die "run as root (sudo)"
+case "${ai_manager_data_dir}" in
+    /*) ;;
+    *) die "--ai-manager-data-dir must be an absolute path" ;;
+esac
+case "${ai_manager_data_dir}" in
+    *[!A-Za-z0-9_./-]*) die "--ai-manager-data-dir contains unsupported characters" ;;
+esac
 [[ -f "${repo_dir}/build.sh" ]] || die "run from a complete repository clone"
 [[ -d "/lib/modules/${kernel_release}/build" ]] || \
     die "matching kernel headers are missing: linux-headers-${kernel_release}"
@@ -191,14 +205,25 @@ depmod -a "${kernel_release}"
     die "depmod selected another nvidia.ko; restore backup ${backup_dir}"
 
 if [[ ${enable_idle_governor} -eq 1 ]]; then
-    install -d -m 0755 /opt/cmp50-unlock/idle-governor
-    install -m 0755 "${repo_dir}/idle-governor/cmp-idle-governor.sh" \
-        "${repo_dir}/idle-governor/cmp-pstate.py" /opt/cmp50-unlock/idle-governor/
+    governor_binary="${repo_dir}/idle-governor/bin/cmp-idle-governor-linux-amd64"
+    [[ "$(uname -m)" == x86_64 ]] || die "the bundled governor supports linux/amd64 only"
+    [[ -x "${governor_binary}" ]] || die "ready governor binary is missing: ${governor_binary}"
+    (cd "${repo_dir}/idle-governor" && sha256sum -c checksums.sha256)
+    install -m 0755 "${governor_binary}" /usr/local/sbin/cmp-idle-governor
     install -m 0644 "${repo_dir}/idle-governor/cmp-idle-governor.service" \
         /etc/systemd/system/cmp-idle-governor.service
+    install -d -m 0755 "${ai_manager_data_dir}/cmp50-power"
+    printf 'CMP50_POWER_CONTROL_DIR=%s/cmp50-power\n' "${ai_manager_data_dir}" \
+        > /etc/default/cmp-idle-governor
+    chmod 0644 /etc/default/cmp-idle-governor
+    if systemctl cat cmp-idle-governor-control.service >/dev/null 2>&1; then
+        systemctl disable --now cmp-idle-governor-control.service >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/cmp-idle-governor-control.service \
+            /usr/local/libexec/cmp-idle-governor-control
+    fi
     systemctl daemon-reload
     systemctl enable cmp-idle-governor.service
-    log "idle governor installed; it will start after reboot"
+    log "AI Server Manager governor installed; it will start after reboot"
 fi
 
 if [[ ${rebuild_initramfs} -eq 1 ]]; then

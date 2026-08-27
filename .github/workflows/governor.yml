@@ -1,0 +1,32 @@
+name: CMP50 governor
+
+on:
+  push:
+    paths:
+      - "idle-governor/**"
+      - ".github/workflows/governor.yml"
+  pull_request:
+    paths:
+      - "idle-governor/**"
+      - ".github/workflows/governor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: idle-governor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache-dependency-path: idle-governor/go.sum
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=1.0.0" -o bin/cmp-idle-governor-linux-amd64 ./cmd/cmp-idle-governor
+      - run: sha256sum -c checksums.sha256

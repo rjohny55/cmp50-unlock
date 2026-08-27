@@ -132,7 +132,7 @@ tools/cmp50-bar0-gen2-prepare.c
 config/cmp50-gen2.conf
 scripts/cmp50-gen2-second-pass.sh
 systemd/cmp50-gen2-second-pass.service
-idle-governor/
+idle-governor/ (единый Go-бинарник/служба для AI Server Manager)
 decompil/gsp_tu10x_610.43.03.elf.i64
 docs/10GB.md и docs/10GB_RU.md
 docs/20GB.md и docs/20GB_RU.md
