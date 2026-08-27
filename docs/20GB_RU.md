@@ -1,6 +1,6 @@
 # CMP 50HX 20 ГБ
 
-[Главная](../README_RU.md) · [Версия 10 ГБ](10GB_RU.md)
+[Главная](../README_RU.md) · [English](20GB.md) · [Версия 10 ГБ](10GB_RU.md)
 
 ## Проверенное оборудование
 
@@ -47,6 +47,7 @@ span         = 00000e00
 | Gen2 на ядре 137 | Автоматический cold boot: 5 GT/s x4 + 3×x16, 4×20480 МиБ, без Link Disable |
 | Gen2 retrain | Endpoint-first Retrain, 50 мс, root Retrain; один повтор после окна 2 с даёт `RETRAIN_PASS attempt=201` на 4/4 |
 | ReBAR вместе с Gen2 | 4×16384 МиБ BAR1; после FLR физический ReBAR control восстанавливается из 256 МиБ в 16 ГиБ при уже выделенном 16-ГиБ окне |
+| Проверенный `nvidia.ko` | SHA-256 `6f7f60204a2a66b595fd0340dda531fd41599492ae97f0fc0630e38f703b4846` на ядре 137 |
 | Gen2 на ядре 138 | Не поддерживается установщиком; ранняя прямая загрузка воспроизводила Booter `0x8d` |
 | Idle governor | На этой 20-ГБ системе ещё не проверен |
 
@@ -98,6 +99,15 @@ sudo systemctl reboot
 модуль второй раз. Endpoint запрашивает Recovery первым, через 50 мс его
 запрашивает root-port; после первого двухсекундного окна выполняется ровно один
 повтор. Все четыре карты завершили его как `RETRAIN_PASS` без Link Disable.
+
+Установленные параметры модуля:
+
+```text
+options nvidia cmp50_rebar_size=8 NVreg_RegistryDwords="RMPcieLinkSpeed=0x1;RmForceEnableGen2=0x1"
+```
+
+В исходниках NVIDIA `RMPcieLinkSpeed=0x1` означает `ALLOW_GEN2_ENABLE`.
+Значение `0x2` отключает Gen2 и здесь использоваться не должно.
 
 Итог после завершения службы:
 

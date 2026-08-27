@@ -1,6 +1,6 @@
 # CMP50 Unlock
 
-[English version](README.md) · [Инструкция агенту по установке](AGENT_INSTALL_RU.md) · [Оригинальное техническое руководство](docs/UPSTREAM_README.md) · [Исходный проект](https://github.com/xrip/cmp50hx-unlock)
+[English version](README.md) · [Инструкция для 20 ГБ](docs/20GB_RU.md) · [Инструкция для 10 ГБ](docs/10GB_RU.md) · [Инструкция агенту по установке](AGENT_INSTALL_RU.md) · [Оригинальное техническое руководство](docs/UPSTREAM_README.md) · [Исходный проект](https://github.com/xrip/cmp50hx-unlock)
 
 ## Выберите версию карты
 
@@ -46,6 +46,64 @@
 
 Подробное объяснение регистров, уровней доказательности, результатов измерений и ограничений сохранено в [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md). Дополнительные исследовательские материалы находятся в [docs/CMP50HX.md](docs/CMP50HX.md).
 
+## Установка и проверка
+
+Установщик собирает модули для текущего ядра, создаёт резервную копию для
+отката и подготавливает драйвер к следующей загрузке. Активный драйвер он не
+выгружает. Начинайте со стадии `rt`, затем проверяйте каждую следующую стадию
+отдельно:
+
+```bash
+git clone https://github.com/rjohny55/cmp50-unlock.git
+cd cmp50-unlock
+sudo ./install.sh --stage rt --install-userland --initramfs
+sudo systemctl poweroff
+```
+
+После холодного старта:
+
+```bash
+sudo ./verify-live.sh
+```
+
+ReBAR устанавливается отдельной стадией, после которой снова нужен холодный
+старт:
+
+```bash
+sudo ./install.sh --stage rebar --initramfs
+sudo systemctl poweroff
+```
+
+На проверенном X99 с ядром строго `6.8.0-137-generic` полная стадия Gen2 для
+20-ГБ карт устанавливается так:
+
+```bash
+sudo ./install.sh --stage gen2 --allow-experimental-gen2 --initramfs
+sudo systemctl reboot
+systemctl status cmp50-gen2-second-pass.service
+sudo ./verify-live.sh
+```
+
+Установщик намеренно запрещает Gen2 на ядре 138 и на всех других ядрах. На
+другой материнской плате остановитесь на ReBAR, пока host-specific путь Gen2
+не будет проверен отдельно. Для отката используйте путь, выведенный
+установщиком:
+
+```bash
+sudo ./rollback.sh /var/lib/cmp50-unlock/backups/TIMESTAMP
+```
+
+### Проверенный результат для 20 ГБ
+
+| Проверка | Результат на эталонном X99 / ядре 137 |
+| --- | --- |
+| Карты | 4 × CMP 50HX, по 20480 МиБ |
+| PCIe | Gen2 x4 + 3 × Gen2 x16 |
+| BAR1 | 16384 МиБ на каждой карте |
+| Compute verifier | `PASS_CMP50HX_ISSUE_RATE_AND_COUNTS` |
+| Boot helper | `cmp50-gen2-second-pass.service`: `active (exited)` |
+| Переключение линии | Endpoint-first Retrain + root Retrain; без Link Disable |
+
 ## Важные ограничения
 
 - Это экспериментальное низкоуровневое исследование GPU и модулей ядра.
@@ -69,12 +127,14 @@ verify-live.sh
 verify/rm_issue_rate.c
 verify/verify.py
 tools/cmp50-bar0-link-rate.c
+tools/cmp50-bar0-gen2-prepare.c
+config/cmp50-gen2.conf
 scripts/cmp50-gen2-second-pass.sh
 systemd/cmp50-gen2-second-pass.service
 idle-governor/
 decompil/gsp_tu10x_610.43.03.elf.i64
-docs/10GB_RU.md
-docs/20GB_RU.md
+docs/10GB.md и docs/10GB_RU.md
+docs/20GB.md и docs/20GB_RU.md
 docs/CMP50HX.md
 docs/UPSTREAM_README.md
 ```

@@ -1,6 +1,6 @@
 # CMP 50HX 10 ГБ
 
-[Главная](../README_RU.md) · [Версия 20 ГБ](20GB_RU.md)
+[Главная](../README_RU.md) · [English](10GB.md) · [Версия 20 ГБ](20GB_RU.md)
 
 ## Статус
 

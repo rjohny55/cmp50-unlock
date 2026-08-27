@@ -1,10 +1,10 @@
 # CMP50 Unlock
 
-[Русская версия](README_RU.md) · [Agent installation runbook (RU)](AGENT_INSTALL_RU.md) · [Original technical guide](docs/UPSTREAM_README.md) · [Original project](https://github.com/xrip/cmp50hx-unlock)
+[Русская версия](README_RU.md) · [20 GB guide](docs/20GB.md) · [10 GB guide](docs/10GB.md) · [Agent installation runbook (RU)](AGENT_INSTALL_RU.md) · [Original technical guide](docs/UPSTREAM_README.md) · [Original project](https://github.com/xrip/cmp50hx-unlock)
 
 ## Card variants
 
-| [CMP 50HX 10 GB (RU)](docs/10GB_RU.md) | [CMP 50HX 20 GB (RU)](docs/20GB_RU.md) |
+| [CMP 50HX 10 GB](docs/10GB.md) | [CMP 50HX 20 GB](docs/20GB.md) |
 | --- | --- |
 | Original, most thoroughly validated configuration | Dynamic WPR support; four 20480 MiB cards validated on kernels 6.8.0-137 and 6.8.0-138 |
 
@@ -47,6 +47,61 @@ installer acknowledgement. See `sudo ./install.sh --help`.
 
 The detailed reasoning, register descriptions, evidence levels, measurements, and limitations are preserved in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md). Additional research notes are available in [docs/CMP50HX.md](docs/CMP50HX.md).
 
+## Installation and verification
+
+The installer builds modules for the running kernel, creates a rollback backup,
+and stages the new driver for the next boot. It never unloads the active driver.
+Start with `rt`, then validate each additional stage separately:
+
+```bash
+git clone https://github.com/rjohny55/cmp50-unlock.git
+cd cmp50-unlock
+sudo ./install.sh --stage rt --install-userland --initramfs
+sudo systemctl poweroff
+```
+
+After the cold boot:
+
+```bash
+sudo ./verify-live.sh
+```
+
+ReBAR is a separate stage and must be followed by another cold boot:
+
+```bash
+sudo ./install.sh --stage rebar --initramfs
+sudo systemctl poweroff
+```
+
+On the validated X99 host with exactly kernel `6.8.0-137-generic`, the complete
+20 GB Gen2 stage is:
+
+```bash
+sudo ./install.sh --stage gen2 --allow-experimental-gen2 --initramfs
+sudo systemctl reboot
+systemctl status cmp50-gen2-second-pass.service
+sudo ./verify-live.sh
+```
+
+The Gen2 installer intentionally refuses kernel 138 and every other kernel.
+On a different motherboard, stop at ReBAR until the host-specific Gen2 path is
+independently validated. Roll back with the backup path printed by the installer:
+
+```bash
+sudo ./rollback.sh /var/lib/cmp50-unlock/backups/TIMESTAMP
+```
+
+### Validated 20 GB result
+
+| Check | Result on the reference X99 / kernel 137 host |
+| --- | --- |
+| GPUs | 4 × CMP 50HX, 20480 MiB each |
+| PCIe | Gen2 x4 + 3 × Gen2 x16 |
+| BAR1 | 16384 MiB on every GPU |
+| Compute verifier | `PASS_CMP50HX_ISSUE_RATE_AND_COUNTS` |
+| Boot helper | `cmp50-gen2-second-pass.service`: `active (exited)` |
+| Link procedure | Endpoint-first Retrain + root Retrain; no Link Disable |
+
 ## Important limitations
 
 - This is experimental low-level GPU and kernel-driver research.
@@ -71,12 +126,13 @@ verify/rm_issue_rate.c
 verify/verify.py
 tools/cmp50-bar0-link-rate.c
 tools/cmp50-bar0-gen2-prepare.c
+config/cmp50-gen2.conf
 scripts/cmp50-gen2-second-pass.sh
 systemd/cmp50-gen2-second-pass.service
 idle-governor/
 decompil/gsp_tu10x_610.43.03.elf.i64
-docs/10GB_RU.md
-docs/20GB_RU.md
+docs/10GB.md and docs/10GB_RU.md
+docs/20GB.md and docs/20GB_RU.md
 docs/CMP50HX.md
 docs/UPSTREAM_README.md
 ```
