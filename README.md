@@ -1,6 +1,6 @@
 # CMP50 Unlock
 
-[Русская версия](README_RU.md) · [20 GB guide](docs/20GB.md) · [10 GB guide](docs/10GB.md) · [Agent installation runbook (RU)](AGENT_INSTALL_RU.md) · [Original technical guide](docs/UPSTREAM_README.md) · [Original project](https://github.com/xrip/cmp50hx-unlock)
+[Русская версия](README_RU.md) · [20 GB guide](docs/20GB.md) · [10 GB guide](docs/10GB.md) · [Agent installation runbook (RU)](AGENT_INSTALL_RU.md) · [Original technical guide](docs/UPSTREAM_README.md) · 
 
 ## Card variants
 
@@ -170,12 +170,3 @@ It is designed to build artifacts only. It does not install, load, unload, or re
 7. Prepare rollback and recovery access.
 8. Only then perform hardware testing on a non-critical host.
 
-## Attribution
-
-Source project and original author:
-
-- Author: [xrip](https://github.com/xrip)
-- Source: [github.com/xrip/cmp50hx-unlock](https://github.com/xrip/cmp50hx-unlock)
-- Imported source commit: `6ddaaf034782bd3f61ce26a211c0168fabbd7684`
-
-No upstream license file was present in the imported snapshot. This mirror keeps explicit attribution and the original technical guide. Users are responsible for verifying their rights and all applicable NVIDIA, driver, firmware, and local legal terms before copying, modifying, distributing, or using the material.
