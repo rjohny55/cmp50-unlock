@@ -1,5 +1,58 @@
 # CMP50 Unlock
 
+## All-in-one installer: unlock + Gen2 + idle governor
+
+For **20 GB CMP50 boards**, the documented X99 hardware and exact kernel
+`6.8.0-137-generic` or `6.8.0-147-generic`:
+
+```bash
+git clone https://github.com/rjohny55/cmp50-unlock.git
+cd cmp50-unlock
+sudo ./install-all.sh --install-deps --allow-experimental-gen2
+# Finish GPU workloads and reboot manually when safe:
+sudo systemctl reboot
+# After reconnecting:
+sudo ./verify-live.sh
+python3 ./verify/cuda-smoke.py
+systemctl status cmp50-gen2-second-pass cmp-idle-governor
+```
+
+The wrapper installs Ubuntu/Debian prerequisites, official NVIDIA 610.43.03
+userspace if necessary, the full Gen2 patch stage with rollback backup,
+nouveau blacklist/initramfs, the ready governor binary and both boot services.
+It never unloads the live driver or reboots automatically. Local recovery
+access is required; Gen2 remains host-specific and unknown kernels are blocked.
+The installer does not resize disks.
+
+Governor profiles are auto-detected for 1/2/4/6/8 supported cards. Mixed NVIDIA
+GPU configurations and unsupported subsystems are refused; the daemon also
+validates 20 GB VRAM. A missing control.json is initialized as enabled with
+automatic fans. Existing panel control/environment settings are preserved,
+including an explicitly disabled governor. Override the panel data directory
+with `--ai-manager-data-dir /absolute/path`.
+
+To add only the governor to an already working unlock/Gen2 installation:
+
+```bash
+sudo ./install-governor.sh --start-now
+journalctl -u cmp-idle-governor -b
+```
+
+On 15 October 2026, the kernel-147 two-card Ubuntu host exposed a bundled
+binary linked to an absent musl loader. The replacement targets Ubuntu/Debian
+glibc; the installer executes `--version` before installing it, and the service
+uses Type=exec. Both cards reached P8 at 645/405 MHz, measured at approximately
+**11.2 + 3.0 W**, versus **74 + 65 W** before installation. Fans remain automatic;
+these are host-specific samples, not a guaranteed wattage.
+Both cards passed the optional 10-second CUDA load/correctness loop: the
+governor released P8 under load and reapplied P8 after idle, without a service
+restart. PCIe remained Gen2. Automatic start after a new reboot was not tested
+in this governor installation session.
+The all-in-one wrapper was also run successfully on that existing Gen2
+installation: cached module checksums passed, initramfs was rebuilt, the
+existing control request was retained and the governor restarted successfully.
+This does not substitute for a cold-boot test on a new motherboard.
+
 [Русская версия](README_RU.md) · [20 GB guide](docs/20GB.md) · [10 GB guide](docs/10GB.md) · [Agent installation runbook (RU)](AGENT_INSTALL_RU.md) · [Original technical guide](docs/UPSTREAM_README.md) · 
 
 ## Card variants

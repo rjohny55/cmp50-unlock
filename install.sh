@@ -116,6 +116,15 @@ if [[ ${disable_nouveau} -eq 1 ]]; then
 fi
 [[ -f "${repo_dir}/scripts/userspace-version.sh" ]] || \
     die "userspace version helper is missing from the repository"
+if [[ ${enable_idle_governor} -eq 1 ]]; then
+    [[ -f "${repo_dir}/install-governor.sh" ]] || die 'governor installer is missing'
+    [[ "$(uname -m)" == x86_64 ]] || die 'bundled governor requires linux/amd64'
+    (cd "${repo_dir}/idle-governor" && sha256sum -c checksums.sha256)
+    "${repo_dir}/idle-governor/bin/cmp-idle-governor-linux-amd64" --version >/dev/null || \
+        die 'bundled governor cannot execute on this host'
+    source "${repo_dir}/scripts/governor-profile.sh"
+    cmp50_governor_profile >/dev/null || die 'unsupported governor GPU configuration'
+fi
 
 command -v lspci >/dev/null || die "pciutils/lspci is required"
 mapfile -t cmp_devices < <(lspci -Dn | awk '$3 == "10de:1e09" {print $1}')
@@ -248,25 +257,7 @@ if [[ ${disable_nouveau} -eq 1 ]]; then
 fi
 
 if [[ ${enable_idle_governor} -eq 1 ]]; then
-    governor_binary="${repo_dir}/idle-governor/bin/cmp-idle-governor-linux-amd64"
-    [[ "$(uname -m)" == x86_64 ]] || die "the bundled governor supports linux/amd64 only"
-    [[ -x "${governor_binary}" ]] || die "ready governor binary is missing: ${governor_binary}"
-    (cd "${repo_dir}/idle-governor" && sha256sum -c checksums.sha256)
-    install -m 0755 "${governor_binary}" /usr/local/sbin/cmp-idle-governor
-    install -m 0644 "${repo_dir}/idle-governor/cmp-idle-governor.service" \
-        /etc/systemd/system/cmp-idle-governor.service
-    install -d -m 0755 "${ai_manager_data_dir}/cmp50-power"
-    printf 'CMP50_POWER_CONTROL_DIR=%s/cmp50-power\n' "${ai_manager_data_dir}" \
-        > /etc/default/cmp-idle-governor
-    chmod 0644 /etc/default/cmp-idle-governor
-    if systemctl cat cmp-idle-governor-control.service >/dev/null 2>&1; then
-        systemctl disable --now cmp-idle-governor-control.service >/dev/null 2>&1 || true
-        rm -f /etc/systemd/system/cmp-idle-governor-control.service \
-            /usr/local/libexec/cmp-idle-governor-control
-    fi
-    systemctl daemon-reload
-    systemctl enable cmp-idle-governor.service
-    log "AI Server Manager governor installed; it will start after reboot"
+    bash "${repo_dir}/install-governor.sh" --ai-manager-data-dir "${ai_manager_data_dir}"
 fi
 
 if [[ ${rebuild_initramfs} -eq 1 ]]; then

@@ -3,7 +3,7 @@ Description=CMP50 power and fan governor for AI Server Manager
 After=cmp50-gen2-second-pass.service nvidia-persistenced.service
 
 [Service]
-Type=simple
+Type=exec
 EnvironmentFile=-/etc/default/cmp-idle-governor
 ExecStartPre=/usr/bin/nvidia-smi -pm 1
 ExecStart=/usr/local/sbin/cmp-idle-governor

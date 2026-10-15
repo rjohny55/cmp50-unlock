@@ -36,20 +36,37 @@ was validated with Gen2 and 16 GiB BAR1 active.
 ## Install with the driver patch
 
 ```sh
-sudo ./install.sh --stage rt --idle-governor
+# Full, explicitly acknowledged Gen2 installation (20 GB / supported X99/kernel):
+sudo ./install-all.sh --install-deps --allow-experimental-gen2
+# Or add the governor without touching an already working driver/Gen2:
+sudo ./install-governor.sh --start-now
 ```
 
 For a non-default AI Server Manager data directory:
 
 ```sh
-sudo ./install.sh --stage rt --idle-governor \
+sudo ./install-governor.sh --start-now \
   --ai-manager-data-dir /opt/stacks/ai-server-manager/data
 ```
 
 The installer verifies `checksums.sha256`, installs the ready binary as
 `/usr/local/sbin/cmp-idle-governor`, installs the systemd unit, and enables it
-for the next boot. It also removes the obsolete two-service panel controller
+for the next boot (`--start-now` starts it immediately on a working 610.43.03
+driver). A missing control.json is created with the detected 1/2/4/6/8-card
+profile, enabled=true, and automatic fans. Existing control.json and environment
+settings are preserved; an existing disabled control is not silently enabled.
+It also removes the obsolete two-service panel controller
 when present. The NVIDIA driver is not unloaded by the installer.
+
+The legacy `install.sh --idle-governor` delegates to the same installer. Always
+pass the intended driver stage explicitly: the default `rt` does not preserve
+an installed Gen2 stage. The standalone governor installer never changes it.
+
+The ready 1.0.1 binary targets the glibc loader at
+`/lib64/ld-linux-x86-64.so.2`, not Alpine's musl loader. CGO_ENABLED=0 by itself
+does not prevent the purego dynamic-loader path from selecting the build host's
+loader. The build script pins the Ubuntu/Debian interpreter; Alpine hosts are
+not runtime targets. The installer runs `--version` before writing the service.
 
 ```sh
 systemctl status cmp-idle-governor
@@ -83,11 +100,14 @@ The module is pinned to Go 1.26.6, matching AI Server Manager:
 go test ./...
 go vet ./...
 go test -race ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-  -ldflags='-s -w -X main.version=1.0.0' \
-  -o bin/cmp-idle-governor-linux-amd64 ./cmd/cmp-idle-governor
+bash ./build.sh
 sha256sum -c checksums.sha256
 ```
+
+On the Ubuntu target, `bin/cmp-idle-governor-linux-amd64 --version` must run
+without loading the NVIDIA APIs. A short optional wake-up/correctness check is
+`python3 verify/cuda-smoke.py --load-seconds 10` from the repository root; it
+runs on each supported card sequentially and is not a throughput benchmark.
 
 The NVIDIA ABI boundary is isolated in `internal/nvidia`; the policy and file
 handling use ordinary safe Go. Dynamic libraries are opened once and closed on

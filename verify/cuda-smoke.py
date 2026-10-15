@@ -5,8 +5,10 @@ Only the two board identities supported by the driver patches are tested.
 This is an installation smoke test, not a performance or full VRAM stress test.
 """
 import array
+import argparse
 import ctypes as C
 from pathlib import Path
+import time
 
 
 PTX = b"""
@@ -45,6 +47,12 @@ done:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--load-seconds", type=int, default=0,
+                        help="optional 0..30 second light compute loop per GPU for governor wake-up testing")
+    args = parser.parse_args()
+    if not 0 <= args.load_seconds <= 30:
+        parser.error("--load-seconds must be 0..30")
     cuda = C.CDLL("libcuda.so.1")
 
     def api(name, *types):
@@ -117,6 +125,14 @@ def main():
             check(launch(function, (size + 255) // 256, 1, 1, 256, 1, 1,
                          0, None, arguments, None), "cuLaunchKernel")
             check(synchronize(), "cuCtxSynchronize")
+            if args.load_seconds:
+                print(f"GOVERNOR_LOAD_START: ordinal={ordinal} seconds={args.load_seconds}", flush=True)
+                deadline = time.monotonic() + args.load_seconds
+                while time.monotonic() < deadline:
+                    for _ in range(32):
+                        check(launch(function, (size + 255) // 256, 1, 1, 256, 1, 1,
+                                     0, None, arguments, None), "load cuLaunchKernel")
+                    check(synchronize(), "load cuCtxSynchronize")
             check(copy_dtoh(out.buffer_info()[0], allocations[2], nbytes), "copy result")
             if any(x + y != z for x, y, z in zip(a, b, out)):
                 raise RuntimeError(f"Vector-add correctness failed on {bdf}")
