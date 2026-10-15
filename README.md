@@ -42,7 +42,7 @@ The project contains four incremental patches:
 Select a build stage with
 `CMP50_PATCH_STAGE=stockflow|rt|rebar|gen2`; the safe default is `rt`, and
 `rebar` is the broadly boot-validated next stage. `gen2` is host-specific,
-validated on the reference X99/kernel-137 system, and requires an explicit
+validated on the documented X99/kernel-137 and kernel-147 systems, and requires an explicit
 installer acknowledgement. See `sudo ./install.sh --help`.
 
 The detailed reasoning, register descriptions, evidence levels, measurements, and limitations are preserved in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md). Additional research notes are available in [docs/CMP50HX.md](docs/CMP50HX.md).
@@ -79,12 +79,34 @@ not restore a previously installed userspace version.
 GPU indices in mixed systems. The CUDA smoke test needs Python 3 and `libcuda`,
 not the CUDA toolkit; it is not a performance or full-VRAM stress test.
 
-**Scope:** kernel 147 is validated for `rt`, not ReBAR or Gen2. The tested links
-remain Gen1 x8 and Gen1 x16. The Gen2 installer restriction is unchanged; this
-result does not claim support for kernel 7.x, every newer kernel, or automatic
-reinstallation after a kernel upgrade. Rebuild and revalidate for each kernel.
+The subsequent Gen2 validation on the same host passes with **Gen2 x8 + Gen2
+x16**, two 20480 MiB GPUs and two 16384 MiB BAR1 apertures. The automatic second
+pass is enabled for exact kernel `6.8.0-147-generic`, in addition to 137.
+After a warm reboot, the service automatically finished as `active (exited)`
+with status 0; RM and CUDA checks passed again on both cards.
+Kernel 138 and unknown kernels remain blocked. This is a host-specific result,
+not a claim for kernel 7.x, every newer kernel, other motherboards or automatic
+reinstallation after a kernel upgrade.
+
+```bash
+# Gen2 remains a separate, explicitly acknowledged stage; stop GPU workloads.
+sudo apt-get install psmisc util-linux pciutils
+sudo ./install.sh --stage gen2 --allow-experimental-gen2 --initramfs
+sudo systemctl reboot
+sudo ./verify-live.sh
+python3 ./verify/cuda-smoke.py
+```
+
+The helper refuses a module-wide second pass while NVIDIA device files are in
+use or another NVIDIA GPU model is bound. A lock prevents concurrent runs, and
+udev is restored after partial failures and termination. No Link Disable is
+used. RM diagnostics now resolve device/subdevice instances through the public
+GET APIs instead of confusing Linux minor numbers with RM device instances
+after unbind/FLR. Rebuild the verifier when updating an old artifact directory.
 
 Offline regression tests: `python3 -m unittest discover -s tests -v`.
+The GET-only mapping regression test also runs without a GPU:
+`cc -O2 -Wall -Wextra -Werror -std=c11 tests/test_rm_mapping.c -o /tmp/cmp50-rm-test && /tmp/cmp50-rm-test`.
 
 The installer builds modules for the running kernel, creates a rollback backup,
 and stages the new driver for the next boot. It never unloads the active driver.
@@ -110,8 +132,8 @@ sudo ./install.sh --stage rebar --initramfs
 sudo systemctl poweroff
 ```
 
-On the validated X99 host with exactly kernel `6.8.0-137-generic`, the complete
-20 GB Gen2 stage is:
+On the documented X99 hosts with exact kernel `6.8.0-137-generic` or
+`6.8.0-147-generic`, the complete 20 GB Gen2 stage is:
 
 ```bash
 sudo ./install.sh --stage gen2 --allow-experimental-gen2 --initramfs
@@ -120,7 +142,7 @@ systemctl status cmp50-gen2-second-pass.service
 sudo ./verify-live.sh
 ```
 
-The Gen2 installer intentionally refuses kernel 138 and every other kernel.
+The Gen2 installer intentionally refuses kernel 138 and other unvalidated kernels.
 On a different motherboard, stop at ReBAR until the host-specific Gen2 path is
 independently validated. Roll back with the backup path printed by the installer:
 

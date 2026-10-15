@@ -18,11 +18,21 @@ restore_udev() {
     fi
 }
 trap restore_udev EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 [[ ${EUID} -eq 0 ]] || die 'must run as root'
+case "$(uname -r)" in
+    6.8.0-137-generic|6.8.0-147-generic) ;;
+    *) die 'this second-pass procedure is restricted to kernels 137 and 147' ;;
+esac
 command -v lspci >/dev/null || die 'lspci is required'
 command -v setpci >/dev/null || die 'setpci is required'
 command -v nvidia-modprobe >/dev/null || die 'nvidia-modprobe is required'
+command -v fuser >/dev/null || die 'fuser (psmisc) is required'
+command -v flock >/dev/null || die 'flock is required'
+exec 9>/run/lock/cmp50-gen2.lock
+flock -n 9 || die 'another Gen2 initialization is running'
 
 mapfile -t devices < <(lspci -Dn | awk '$3 == "10de:1e09" {print $1}')
 readonly expected_count=${#devices[@]}
@@ -68,11 +78,33 @@ if [[ ${all_gen2} -eq 1 ]]; then
     exit 0
 fi
 
+# Unloading NVIDIA is a module-wide operation. Do not disturb another GPU type
+# or a running application, even when all requested CMP boards are supported.
+for driver_device in /sys/bus/pci/drivers/nvidia/????:??:??.?; do
+    [[ -L "${driver_device}" ]] || continue
+    read -r vendor < "${driver_device}/vendor"
+    read -r device < "${driver_device}/device"
+    [[ "${vendor}:${device}" == 0x10de:0x1e09 ]] || \
+        die 'a non-CMP50 GPU uses nvidia; refusing the module-wide second pass'
+done
+shopt -s nullglob
+gpu_nodes=(/dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset)
+if fuser "${gpu_nodes[@]}" >/dev/null 2>&1; then
+    die 'NVIDIA device files are in use; stop GPU applications before the second pass'
+fi
+for unit in systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket; do
+    unit_state=$(systemctl is-enabled "${unit}" 2>/dev/null || true)
+    [[ "${unit_state}" != masked && "${unit_state}" != masked-runtime ]] || \
+        die "${unit} was already masked; refusing to alter its policy"
+done
+
+# Mark before the first operation: a partial mask/stop failure must also run
+# restoration. Previously an error in systemctl stop left udev masked.
+udev_stopped=1
 systemctl mask --runtime systemd-udevd.service \
     systemd-udevd-control.socket systemd-udevd-kernel.socket >/dev/null
 systemctl stop systemd-udevd-control.socket systemd-udevd-kernel.socket \
     systemd-udevd.service
-udev_stopped=1
 
 for bdf in "${devices[@]}"; do
     dev="/sys/bus/pci/devices/${bdf}"

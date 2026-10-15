@@ -25,6 +25,7 @@
 
 typedef uint8_t NvU8;
 typedef uint8_t NvBool;
+typedef uint16_t NvU16;
 typedef uint32_t NvU32;
 typedef uint32_t NvV32;
 typedef uint32_t NvHandle;
@@ -34,11 +35,42 @@ typedef void *NvP64;
 #define NV_IOCTL_MAGIC 'F'
 #define NV_IOCTL_BASE 200
 #define NV_ESC_REGISTER_FD (NV_IOCTL_BASE + 1)
+#define NV_ESC_CARD_INFO (NV_IOCTL_BASE + 0)
 #define NV_ESC_RM_CONTROL 0x2a
 #define NV_ESC_RM_ALLOC 0x2b
 
 #define NV01_DEVICE_0 0x80U
 #define NV20_SUBDEVICE_0 0x2080U
+#define NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2 0x205U
+
+typedef struct {
+    NvU32 domain;
+    NvU8 bus, slot, function;
+    NvU16 vendor_id, device_id;
+} nv_pci_info_t;
+
+typedef struct {
+    NvBool valid;
+    nv_pci_info_t pci_info;
+    NvU32 gpu_id;
+    NvU16 interrupt_line;
+    NvU64 reg_address NV_ALIGN_BYTES(8);
+    NvU64 reg_size NV_ALIGN_BYTES(8);
+    NvU64 fb_address NV_ALIGN_BYTES(8);
+    NvU64 fb_size NV_ALIGN_BYTES(8);
+    NvU32 minor_number;
+    NvU8 dev_name[10];
+} nv_ioctl_card_info_t;
+
+typedef struct {
+    NvU32 gpuId, gpuFlags, deviceInstance, subDeviceInstance;
+    NvU32 sliStatus, boardId, gpuInstance;
+    int32_t numaId;
+} NV0000_CTRL_GPU_GET_ID_INFO_V2_PARAMS;
+
+_Static_assert(sizeof(nv_ioctl_card_info_t) == 72, "card-info ABI mismatch");
+_Static_assert(sizeof(NV0000_CTRL_GPU_GET_ID_INFO_V2_PARAMS) == 32,
+               "GPU ID info ABI mismatch");
 
 #define NV2080_CTRL_CMD_GR_GET_SM_ISSUE_RATE_MODIFIER 0x20801230U
 #define NV2080_CTRL_CMD_GR_GET_SM_ISSUE_RATE_MODIFIER_V2 0x2080123cU
@@ -379,13 +411,14 @@ static bool alloc_device(int nvidiactl_fd, NvHandle client, int device_index,
 }
 
 static bool alloc_subdevice(int nvidiactl_fd, NvHandle client, NvHandle device,
-                            NvHandle *subdevice)
+                            NvU32 subdevice_instance, NvHandle *subdevice)
 {
     NV2080_ALLOC_PARAMETERS params = {0};
     NVOS64_PARAMETERS request = {0};
     unsigned long ioctl_request = _IOWR(NV_IOCTL_MAGIC, NV_ESC_RM_ALLOC,
                                          NVOS64_PARAMETERS);
 
+    params.subDeviceId = subdevice_instance;
     request.hRoot = client;
     request.hObjectParent = device;
     request.hClass = NV20_SUBDEVICE_0;
@@ -423,6 +456,48 @@ static ControlResult rm_control(int nvidiactl_fd, NvHandle client,
         result.os_error = errno;
     result.rm_status = request.status;
     return result;
+}
+
+/* Linux minors and RM broadcast device instances are different namespaces.
+ * A driver unbind/FLR/reprobe can change the latter without changing minors.
+ * Resolve the selected /dev/nvidiaN through the public GET-only ABI instead
+ * of assuming deviceId=N (which returned NV_ERR_INVALID_DEVICE on GPU1).
+ */
+static bool resolve_device_instances(int nvidiactl_fd, NvHandle client,
+                                     int minor, NvU32 *device_instance,
+                                     NvU32 *subdevice_instance)
+{
+    nv_ioctl_card_info_t cards[128] = {0};
+    unsigned long request = _IOC(_IOC_READ | _IOC_WRITE, NV_IOCTL_MAGIC,
+                                  NV_ESC_CARD_INFO, sizeof(cards));
+    if (ioctl(nvidiactl_fd, request, cards) != 0) {
+        fprintf(stderr, "NV_ESC_CARD_INFO failed: %s\n", strerror(errno));
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(cards) / sizeof(cards[0]); ++i) {
+        NV0000_CTRL_GPU_GET_ID_INFO_V2_PARAMS info = {0};
+        ControlResult status;
+        if (!cards[i].valid || cards[i].minor_number != (NvU32)minor)
+            continue;
+        info.gpuId = cards[i].gpu_id;
+        status = rm_control(nvidiactl_fd, client, client,
+                            NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2,
+                            &info, sizeof(info));
+        if (!rm_ok(status)) {
+            fprintf(stderr, "RM GPU ID lookup failed: os=%d rm=0x%08x\n",
+                    status.os_error, status.rm_status);
+            return false;
+        }
+        *device_instance = info.deviceInstance;
+        *subdevice_instance = info.subDeviceInstance;
+        fprintf(stderr, "RM mapping: minor=%d pci=%04x:%02x:%02x.%u device=%u subdevice=%u\n",
+                minor, cards[i].pci_info.domain, cards[i].pci_info.bus,
+                cards[i].pci_info.slot, cards[i].pci_info.function,
+                *device_instance, *subdevice_instance);
+        return true;
+    }
+    fprintf(stderr, "No attached GPU matches minor %d\n", minor);
+    return false;
 }
 
 static void query_engine_classes(int nvidiactl_fd, NvHandle client,
@@ -827,6 +902,8 @@ int main(int argc, char **argv)
     NvHandle client = 0;
     NvHandle device = 0;
     NvHandle subdevice = 0;
+    NvU32 device_instance = 0;
+    NvU32 subdevice_instance = 0;
 
     if (argc != 2 || !parse_device_index(argv[1], &device_index)) {
         fprintf(stderr, "Usage: %s NVIDIA_DEVICE_INDEX\n", argv[0]);
@@ -850,8 +927,10 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     if (!alloc_client(nvidiactl_fd, &client) ||
-        !alloc_device(nvidiactl_fd, client, device_index, &device) ||
-        !alloc_subdevice(nvidiactl_fd, client, device, &subdevice))
+        !resolve_device_instances(nvidiactl_fd, client, device_index,
+                                  &device_instance, &subdevice_instance) ||
+        !alloc_device(nvidiactl_fd, client, (int)device_instance, &device) ||
+        !alloc_subdevice(nvidiactl_fd, client, device, subdevice_instance, &subdevice))
         goto cleanup;
 
     result = run_probe(nvidiactl_fd, client, subdevice, device_index);

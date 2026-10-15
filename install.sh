@@ -35,7 +35,8 @@ usage: sudo ./install.sh [options]
 The 20 GB rt and ReBAR stages are boot-validated on the reference host with
 kernels 6.8.0-137 and 6.8.0-138. Validate ReBAR on every new host. Gen2 uses a
 fail-closed second-pass FLR helper on hosts that remain at Gen1 after the first
-driver load. It is validated only on the reference X99 host with kernel 137.
+driver load. The supported kernels are 6.8.0-137 and 6.8.0-147, on the
+documented X99 configurations. Other kernels, including 138, remain blocked.
 EOF
 }
 
@@ -86,8 +87,14 @@ fi
 if [[ "${stage}" == gen2 && ${allow_experimental_gen2} -ne 1 ]]; then
     die "gen2 is host-specific; rerun with --allow-experimental-gen2 only with local recovery access"
 fi
-if [[ "${stage}" == gen2 && "${kernel_release}" != "6.8.0-137-generic" ]]; then
-    die "the automatic Gen2 second pass is validated only on kernel 6.8.0-137-generic"
+if [[ "${stage}" == gen2 ]]; then
+    case "${kernel_release}" in
+        6.8.0-137-generic|6.8.0-147-generic) ;;
+        *) die "the automatic Gen2 second pass supports only kernels 6.8.0-137-generic and 6.8.0-147-generic" ;;
+    esac
+    for required in flock fuser setpci nvidia-modprobe; do
+        command -v "${required}" >/dev/null || die "Gen2 requires ${required}"
+    done
 fi
 [[ ${EUID} -eq 0 ]] || die "run as root (sudo)"
 case "${ai_manager_data_dir}" in
