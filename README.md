@@ -49,6 +49,43 @@ The detailed reasoning, register descriptions, evidence levels, measurements, an
 
 ## Installation and verification
 
+### Ubuntu 24.04 / kernel 6.8.0-147 first installation
+
+Validated on 15 October 2026 on a HUANANZHI X10X99-16D V1.3 with two
+CMP 50HX 20 GB boards (`10de:1e09`, subsystem `10de:1554`): NVIDIA Open
+`610.43.03`, stage `rt`, boots on `6.8.0-147-generic`; both boards pass the RM
+issue-rate/count checks and an actual CUDA vector-add correctness test.
+No kernel-source compatibility patch was required for this kernel.
+
+On a fresh machine whose cards are owned by nouveau, explicitly stage its
+blacklist and rebuild initramfs:
+
+```bash
+sudo ./install.sh --stage rt --install-userland --disable-nouveau --initramfs
+sudo systemctl reboot
+# After reconnecting:
+sudo ./verify-live.sh
+python3 ./verify/cuda-smoke.py
+```
+
+`--disable-nouveau` never unloads the live driver and requires `--initramfs`.
+The installer backs up the existing initramfs/modules/policy before changing
+userspace, and validates the installed CUDA/NVML libraries without requiring an
+already running NVIDIA driver. The rollback restores the previous nouveau
+policy. An installed NVIDIA userspace package is retained by rollback; it does
+not restore a previously installed userspace version.
+
+`verify-live.sh` now checks RM on **every** CMP card, including non-contiguous
+GPU indices in mixed systems. The CUDA smoke test needs Python 3 and `libcuda`,
+not the CUDA toolkit; it is not a performance or full-VRAM stress test.
+
+**Scope:** kernel 147 is validated for `rt`, not ReBAR or Gen2. The tested links
+remain Gen1 x8 and Gen1 x16. The Gen2 installer restriction is unchanged; this
+result does not claim support for kernel 7.x, every newer kernel, or automatic
+reinstallation after a kernel upgrade. Rebuild and revalidate for each kernel.
+
+Offline regression tests: `python3 -m unittest discover -s tests -v`.
+
 The installer builds modules for the running kernel, creates a rollback backup,
 and stages the new driver for the next boot. It never unloads the active driver.
 Start with `rt`, then validate each additional stage separately:
@@ -169,4 +206,3 @@ It is designed to build artifacts only. It does not install, load, unload, or re
 6. Inspect module version, vermagic, strings, and checksums.
 7. Prepare rollback and recovery access.
 8. Only then perform hardware testing on a non-critical host.
-

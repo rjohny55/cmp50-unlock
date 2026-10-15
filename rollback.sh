@@ -41,6 +41,15 @@ rm -f /etc/modprobe.d/cmp50-unlock.conf
 if [[ -f "${backup_dir}/cmp50-unlock.conf" ]]; then
     cp -a "${backup_dir}/cmp50-unlock.conf" /etc/modprobe.d/cmp50-unlock.conf
 fi
+# Old backups did not manage nouveau. Do not remove a separately configured
+# policy when rolling one of those back.
+if [[ -f "${backup_dir}/nouveau-policy-managed" ]]; then
+    rm -f /etc/modprobe.d/cmp50-disable-nouveau.conf
+    if [[ -f "${backup_dir}/cmp50-disable-nouveau.conf" ]]; then
+        cp -a "${backup_dir}/cmp50-disable-nouveau.conf" \
+            /etc/modprobe.d/cmp50-disable-nouveau.conf
+    fi
+fi
 if [[ -f "${backup_dir}/initrd.img-${kernel_release}" ]]; then
     cp -a "${backup_dir}/initrd.img-${kernel_release}" "/boot/initrd.img-${kernel_release}"
 fi

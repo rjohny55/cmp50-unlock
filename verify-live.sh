@@ -17,14 +17,16 @@ if [[ -z "${artifact_probe}" ]]; then
 fi
 [[ -x "${artifact_probe}" ]] || { echo "rm-issue-rate artifact not found" >&2; exit 1; }
 
-# The current verifier tool is reliable on GPU index 0. Multi-GPU visibility,
-# VRAM and PCIe state are still printed for every card above.
 probe_json="$(mktemp)"
 trap 'rm -f "${probe_json}"' EXIT
-"${artifact_probe}" "${gpu_indices[0]}" > "${probe_json}"
-python3 "${repo_dir}/verify/verify.py" "${probe_json}"
+for gpu_index in "${gpu_indices[@]}"; do
+    "${artifact_probe}" "${gpu_index}" > "${probe_json}"
+    python3 "${repo_dir}/verify/verify.py" "${probe_json}"
+    printf 'PASS_CMP50_RM: GPU %s\n' "${gpu_index}"
+done
 
-mapfile -t memory_totals < <(nvidia-smi --query-gpu=memory.total \
+selected_gpus="$(IFS=,; printf '%s' "${gpu_indices[*]}")"
+mapfile -t memory_totals < <(nvidia-smi --id="${selected_gpus}" --query-gpu=memory.total \
     --format=csv,noheader,nounits)
 [[ ${#memory_totals[@]} -eq ${#gpu_indices[@]} ]] || {
     echo "could not read VRAM totals for every GPU" >&2
@@ -32,7 +34,7 @@ mapfile -t memory_totals < <(nvidia-smi --query-gpu=memory.total \
 }
 for index in "${!memory_totals[@]}"; do
     memory="${memory_totals[${index}]}"
-    [[ "${memory}" -ge 9500 ]] || { echo "GPU ${index}: unexpected VRAM ${memory} MiB" >&2; exit 1; }
+    [[ "${memory}" -ge 9500 ]] || { echo "GPU ${gpu_indices[${index}]}: unexpected VRAM ${memory} MiB" >&2; exit 1; }
 done
 
 if systemctl is-enabled cmp50-gen2-second-pass.service >/dev/null 2>&1; then
@@ -41,7 +43,7 @@ if systemctl is-enabled cmp50-gen2-second-pass.service >/dev/null 2>&1; then
         exit 1
     }
     mapfile -t cmp_bdfs < <(lspci -Dn | awk '$3 == "10de:1e09" {print $1}')
-    mapfile -t bar1_totals < <(nvidia-smi -q -d MEMORY | \
+    mapfile -t bar1_totals < <(nvidia-smi --id="${selected_gpus}" -q -d MEMORY | \
         awk '/BAR1 Memory Usage/{getline; if ($1 == "Total") print $3}')
     [[ ${#bar1_totals[@]} -eq ${#gpu_indices[@]} ]] || {
         echo "could not read BAR1 totals for every GPU" >&2

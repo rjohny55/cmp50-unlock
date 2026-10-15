@@ -11,6 +11,7 @@ stage="rt"
 install_userland=0
 rebuild_initramfs=0
 enable_idle_governor=0
+disable_nouveau=0
 allow_experimental_gen2=0
 ai_manager_data_dir="/opt/stacks/ai-server-manager/data"
 
@@ -24,6 +25,8 @@ usage: sudo ./install.sh [options]
   --stage stockflow|rt|rebar|gen2  incremental patch stage (default: rt)
   --install-userland               install official NVIDIA 610.43.03 userspace
   --initramfs                      rebuild initramfs after installing modules
+  --disable-nouveau                stage a nouveau blacklist for the next boot;
+                                   requires --initramfs, never unloads it live
   --idle-governor                  install and enable the optional idle governor
   --ai-manager-data-dir PATH       host data path used by AI Server Manager
                                    (default: /opt/stacks/ai-server-manager/data)
@@ -54,6 +57,10 @@ while [[ $# -gt 0 ]]; do
             enable_idle_governor=1
             shift
             ;;
+        --disable-nouveau)
+            disable_nouveau=1
+            shift
+            ;;
         --ai-manager-data-dir)
             ai_manager_data_dir="${2:?--ai-manager-data-dir needs a value}"
             shift 2
@@ -73,6 +80,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${stage}" in stockflow|rt|rebar|gen2) ;; *) die "bad stage: ${stage}" ;; esac
+if [[ ${disable_nouveau} -eq 1 && ${rebuild_initramfs} -ne 1 ]]; then
+    die "--disable-nouveau requires --initramfs so the next boot uses the new policy"
+fi
 if [[ "${stage}" == gen2 && ${allow_experimental_gen2} -ne 1 ]]; then
     die "gen2 is host-specific; rerun with --allow-experimental-gen2 only with local recovery access"
 fi
@@ -90,6 +100,15 @@ esac
 [[ -f "${repo_dir}/build.sh" ]] || die "run from a complete repository clone"
 [[ -d "/lib/modules/${kernel_release}/build" ]] || \
     die "matching kernel headers are missing: linux-headers-${kernel_release}"
+if [[ ${rebuild_initramfs} -eq 1 ]]; then
+    command -v update-initramfs >/dev/null || die "update-initramfs is unavailable"
+fi
+if [[ ${disable_nouveau} -eq 1 ]]; then
+    [[ -f "${repo_dir}/config/cmp50-disable-nouveau.conf" ]] || \
+        die "nouveau policy is missing from the repository"
+fi
+[[ -f "${repo_dir}/scripts/userspace-version.sh" ]] || \
+    die "userspace version helper is missing from the repository"
 
 command -v lspci >/dev/null || die "pciutils/lspci is required"
 mapfile -t cmp_devices < <(lspci -Dn | awk '$3 == "10de:1e09" {print $1}')
@@ -105,12 +124,53 @@ for bdf in "${cmp_devices[@]}"; do
         10de:1554|1462:371f) ;;
         *) die "unsupported subsystem ${subsystem} at ${bdf}" ;;
     esac
+    if [[ -L "${sysfs_dev}/driver" &&
+          "$(basename "$(readlink -f "${sysfs_dev}/driver")")" == nouveau &&
+          ${disable_nouveau} -ne 1 ]]; then
+        die "nouveau owns ${bdf}; use --disable-nouveau --initramfs for a staged first install"
+    fi
 done
 log "found ${#cmp_devices[@]} supported CMP 50HX card(s): ${cmp_devices[*]}"
 
 if command -v mokutil >/dev/null 2>&1 \
         && mokutil --sb-state 2>/dev/null | grep -q 'SecureBoot enabled\|Secure Boot enabled'; then
     die "Secure Boot is enabled; sign the modules with an enrolled key first"
+fi
+
+# Preserve the previous boot state before changing userspace or modules, also
+# on a clean server where nouveau is the only installed GPU driver.
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir="/var/lib/cmp50-unlock/backups/${timestamp}-$$"
+install_dir="/lib/modules/${kernel_release}/updates"
+install -d -m 0700 "${backup_dir}" "${backup_dir}/modules"
+for module in nvidia nvidia_uvm nvidia_modeset nvidia_drm nvidia_peermem; do
+    old_path="$(modinfo -n "${module}" 2>/dev/null || true)"
+    if [[ -n "${old_path}" && -f "${old_path}" ]]; then
+        cp -a --parents "${old_path}" "${backup_dir}/modules"
+    fi
+done
+if [[ -e "/boot/initrd.img-${kernel_release}" ]]; then
+    cp -a "/boot/initrd.img-${kernel_release}" "${backup_dir}/"
+fi
+for config_file in cmp50-unlock.conf cmp50-disable-nouveau.conf; do
+    if [[ -f "/etc/modprobe.d/${config_file}" ]]; then
+        cp -a "/etc/modprobe.d/${config_file}" "${backup_dir}/"
+    fi
+done
+for path in /usr/local/sbin/cmp50-gen2-second-pass \
+            /etc/systemd/system/cmp50-gen2-second-pass.service; do
+    if [[ -f "${path}" ]]; then
+        cp -a --parents "${path}" "${backup_dir}/"
+    fi
+done
+if systemctl is-enabled cmp50-gen2-second-pass.service >/dev/null 2>&1; then
+    : > "${backup_dir}/cmp50-gen2-second-pass.enabled"
+fi
+uname -a > "${backup_dir}/uname.txt"
+lspci -Dnn > "${backup_dir}/lspci.txt"
+log "rollback backup: ${backup_dir}"
+if [[ ${disable_nouveau} -eq 1 ]]; then
+    : > "${backup_dir}/nouveau-policy-managed"
 fi
 
 if [[ ${install_userland} -eq 1 ]]; then
@@ -129,9 +189,8 @@ if [[ ${install_userland} -eq 1 ]]; then
         --skip-module-unload
 fi
 
-installed_userland="$(nvidia-smi --version 2>/dev/null | \
-    awk -F: '/NVIDIA-SMI version/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' || true)"
-if [[ "${installed_userland}" != "${driver_version}" ]]; then
+source "${repo_dir}/scripts/userspace-version.sh"
+if ! cmp50_userspace_matches "${driver_version}"; then
     die "NVIDIA ${driver_version} userspace is not installed; rerun with --install-userland"
 fi
 
@@ -144,34 +203,6 @@ if [[ ! -f "${artifact_dir}/checksums.sha256" ]]; then
         bash "${repo_dir}/build.sh"
 fi
 (cd "${artifact_dir}" && sha256sum -c checksums.sha256)
-
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-backup_dir="/var/lib/cmp50-unlock/backups/${timestamp}"
-install_dir="/lib/modules/${kernel_release}/updates"
-install -d -m 0700 "${backup_dir}/modules"
-for module in nvidia nvidia_uvm nvidia_modeset nvidia_drm nvidia_peermem; do
-    old_path="$(modinfo -n "${module}" 2>/dev/null || true)"
-    if [[ -n "${old_path}" && -f "${old_path}" ]]; then
-        cp -a --parents "${old_path}" "${backup_dir}/modules"
-    fi
-done
-if [[ -e "/boot/initrd.img-${kernel_release}" ]]; then
-    cp -a "/boot/initrd.img-${kernel_release}" "${backup_dir}/"
-fi
-if [[ -f /etc/modprobe.d/cmp50-unlock.conf ]]; then
-    cp -a /etc/modprobe.d/cmp50-unlock.conf "${backup_dir}/"
-fi
-for path in /usr/local/sbin/cmp50-gen2-second-pass \
-            /etc/systemd/system/cmp50-gen2-second-pass.service; do
-    if [[ -f "${path}" ]]; then
-        cp -a --parents "${path}" "${backup_dir}/"
-    fi
-done
-if systemctl is-enabled cmp50-gen2-second-pass.service >/dev/null 2>&1; then
-    : > "${backup_dir}/cmp50-gen2-second-pass.enabled"
-fi
-uname -a > "${backup_dir}/uname.txt"
-lspci -Dnn > "${backup_dir}/lspci.txt"
 
 install -d -m 0755 "${install_dir}"
 for module in nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-peermem; do
@@ -203,6 +234,11 @@ depmod -a "${kernel_release}"
     die "installed module version check failed"
 [[ "$(modinfo -n nvidia)" == "${install_dir}/nvidia.ko" ]] || \
     die "depmod selected another nvidia.ko; restore backup ${backup_dir}"
+
+if [[ ${disable_nouveau} -eq 1 ]]; then
+    install -m 0644 "${repo_dir}/config/cmp50-disable-nouveau.conf" \
+        /etc/modprobe.d/cmp50-disable-nouveau.conf
+fi
 
 if [[ ${enable_idle_governor} -eq 1 ]]; then
     governor_binary="${repo_dir}/idle-governor/bin/cmp-idle-governor-linux-amd64"
