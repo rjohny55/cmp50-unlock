@@ -1,0 +1,252 @@
+diff --git a/kernel-open/nvidia/nv-pci.c b/kernel-open/nvidia/nv-pci.c
+index 82338b8..a848f9f 100644
+--- a/kernel-open/nvidia/nv-pci.c
++++ b/kernel-open/nvidia/nv-pci.c
+@@ -36,6 +36,7 @@
+ #include <linux/clk.h>
+ #include <linux/device.h>
+ #include <linux/jiffies.h>
++#include <linux/io.h>
+ #include <linux/kernel.h>
+ #include <linux/workqueue.h>
+ 
+@@ -337,6 +338,208 @@ static void nv_get_pci_sysfs_config
+ #endif
+ }
+ 
++#define NV_CMP50_REBAR_XVE_BASE_OFFSET 0x00088000U
++#define NV_CMP50_REBAR_CYA_OFFSET      0x00000724U
++#define NV_CMP50_REBAR_CAP_OFFSET      0x00000bbcU
++#define NV_CMP50_REBAR_CFG_OFFSET      0x00000dccU
++#define NV_CMP50_REBAR_CYA_UNLOCK      0x00000030U
++#define NV_CMP50_REBAR_CFG_ENABLE      BIT(31)
++#define NV_CMP50_REBAR_CFG_SIZE_MASK   0x0000000fU
++
++/*
++ * The selector is added to the PCI ReBAR base encoding (6). Thus selector 1
++ * is 128 MiB, selector 8 is 16 GiB and selector 9 is 32 GiB. Zero keeps the stock XVE state.
++ */
++static unsigned int cmp50_rebar_size = 8;
++module_param(cmp50_rebar_size, uint, 0444);
++MODULE_PARM_DESC(cmp50_rebar_size,
++    "CMP 50HX BAR1 selector (0=off, 1..9=128MiB..32GiB)");
++
++static int nv_cmp50_unlock_bar1_resize
++(
++    struct pci_dev *pci_dev,
++    u8 regs_bar_index
++)
++{
++#if defined(NV_PCI_REBAR_GET_POSSIBLE_SIZES_PRESENT)
++    resource_size_t bar0_size;
++    u8 __iomem *xve;
++    u32 cya, cfg, cap, new_cfg, read_cya, read_cfg, read_cap;
++    u32 rebar_ctrl, rebar_ctrl_after;
++    u16 command;
++    unsigned long sizes;
++    unsigned int selector = cmp50_rebar_size;
++    unsigned int requested_size = selector + 6U;
++    unsigned int nbar, entry;
++    int rebar_pos;
++    NvBool bar1_found = NV_FALSE;
++
++    if ((pci_dev->vendor != PCI_VENDOR_ID_NVIDIA) ||
++        (pci_dev->device != 0x1e09) ||
++        !(((pci_dev->subsystem_vendor == 0x10de) &&
++           (pci_dev->subsystem_device == 0x1554)) ||
++          ((pci_dev->subsystem_vendor == 0x1462) &&
++           (pci_dev->subsystem_device == 0x371f))) || (selector == 0))
++    {
++        return 0;
++    }
++
++    if (selector > 9)
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: bad selector %u; use 0..9\n", selector);
++        return -EINVAL;
++    }
++
++    bar0_size = pci_resource_len(pci_dev, regs_bar_index);
++    if (!(pci_resource_flags(pci_dev, regs_bar_index) & IORESOURCE_MEM) ||
++        (bar0_size < NV_CMP50_REBAR_XVE_BASE_OFFSET + 0x1000U))
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: BAR0 is not usable for XVE\n");
++        return -ENODEV;
++    }
++
++    xve = ioremap(pci_resource_start(pci_dev, regs_bar_index) +
++                  NV_CMP50_REBAR_XVE_BASE_OFFSET, 0x1000U);
++    if (xve == NULL)
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: XVE map failed\n");
++        return -ENOMEM;
++    }
++
++    cya = readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++    cfg = readl(xve + NV_CMP50_REBAR_CFG_OFFSET);
++    cap = readl(xve + NV_CMP50_REBAR_CAP_OFFSET);
++    new_cfg = (cfg & ~NV_CMP50_REBAR_CFG_SIZE_MASK) |
++              NV_CMP50_REBAR_CFG_ENABLE | selector;
++
++    writel(NV_CMP50_REBAR_CYA_UNLOCK,
++           xve + NV_CMP50_REBAR_CYA_OFFSET);
++    read_cya = readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++    writel(new_cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++    read_cfg = readl(xve + NV_CMP50_REBAR_CFG_OFFSET);
++    read_cap = readl(xve + NV_CMP50_REBAR_CAP_OFFSET);
++
++    if (((read_cfg & (NV_CMP50_REBAR_CFG_ENABLE |
++                      NV_CMP50_REBAR_CFG_SIZE_MASK)) !=
++         (new_cfg & (NV_CMP50_REBAR_CFG_ENABLE |
++                     NV_CMP50_REBAR_CFG_SIZE_MASK))))
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: XVE readback failed "
++            "old=%08x/%08x/%08x new=%08x/%08x/%08x\n",
++            cya, cfg, cap, read_cya, read_cfg, read_cap);
++        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++        iounmap(xve);
++        return -EIO;
++    }
++
++    sizes = pci_rebar_get_possible_sizes(pci_dev, NV_GPU_BAR1);
++    if (!(sizes & BIT(selector + 6)))
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: size mask 0x%lx has no selector %u "
++            "XVE=%08x/%08x/%08x->%08x/%08x/%08x\n",
++            sizes, selector + 6, cya, cfg, cap,
++            read_cya, read_cfg, read_cap);
++        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++        iounmap(xve);
++        return -EIO;
++    }
++
++    /*
++     * FLR resets the physical ReBAR control register to 256 MiB, while the
++     * Linux resource remains allocated at 16 GiB.  In that state the normal
++     * NVIDIA resize path sees the already-large resource and returns early.
++     * Re-arm only the exact BAR1 control entry when its existing allocation
++     * already matches the requested size; the address therefore does not
++     * move and no bridge window is changed.
++     */
++    rebar_pos = pci_find_ext_capability(pci_dev, PCI_EXT_CAP_ID_REBAR);
++    if (rebar_pos == 0)
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: physical ReBAR capability disappeared\n");
++        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++        iounmap(xve);
++        return -EIO;
++    }
++
++    pci_read_config_dword(pci_dev, rebar_pos + PCI_REBAR_CTRL,
++                          &rebar_ctrl);
++    nbar = (rebar_ctrl & PCI_REBAR_CTRL_NBAR_MASK) >>
++           PCI_REBAR_CTRL_NBAR_SHIFT;
++    for (entry = 0; entry < nbar; entry++)
++    {
++        pci_read_config_dword(pci_dev,
++            rebar_pos + PCI_REBAR_CTRL + entry * 8U, &rebar_ctrl);
++        if ((rebar_ctrl & PCI_REBAR_CTRL_BAR_IDX) == NV_GPU_BAR1)
++        {
++            bar1_found = NV_TRUE;
++            break;
++        }
++    }
++    if (!bar1_found)
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: CMP50_REBAR: BAR1 control entry not found\n");
++        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++        iounmap(xve);
++        return -EIO;
++    }
++
++    if ((pci_resource_len(pci_dev, NV_GPU_BAR1) ==
++         ((resource_size_t)1U << (requested_size + 20U))) &&
++        (((rebar_ctrl & PCI_REBAR_CTRL_BAR_SIZE) >>
++          PCI_REBAR_CTRL_BAR_SHIFT) != requested_size))
++    {
++        pci_read_config_word(pci_dev, PCI_COMMAND, &command);
++        pci_write_config_word(pci_dev, PCI_COMMAND,
++                              command & ~PCI_COMMAND_MEMORY);
++        rebar_ctrl = (rebar_ctrl & ~PCI_REBAR_CTRL_BAR_SIZE) |
++                     (requested_size << PCI_REBAR_CTRL_BAR_SHIFT);
++        pci_write_config_dword(pci_dev,
++            rebar_pos + PCI_REBAR_CTRL + entry * 8U, rebar_ctrl);
++        pci_read_config_dword(pci_dev,
++            rebar_pos + PCI_REBAR_CTRL + entry * 8U, &rebar_ctrl_after);
++        pci_write_config_word(pci_dev, PCI_COMMAND, command);
++        if ((rebar_ctrl_after & PCI_REBAR_CTRL_BAR_SIZE) !=
++            (rebar_ctrl & PCI_REBAR_CTRL_BAR_SIZE))
++        {
++            nv_printf(NV_DBG_ERRORS,
++                "NVRM: CMP50_REBAR: FLR re-arm failed %08x/%08x\n",
++                rebar_ctrl, rebar_ctrl_after);
++            writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++            writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++            readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++            iounmap(xve);
++            return -EIO;
++        }
++        nv_printf(NV_DBG_INFO,
++            "NVRM: CMP50_REBAR: FLR re-arm selector=%u control=%08x\n",
++            requested_size, rebar_ctrl_after);
++    }
++
++    NVreg_EnableResizableBar = 1;
++    nv_printf(NV_DBG_INFO,
++        "NVRM: CMP50_REBAR: selector=%u mask=0x%lx "
++        "XVE=%08x/%08x/%08x->%08x/%08x/%08x\n",
++        selector, sizes, cya, cfg, cap, read_cya, read_cfg, read_cap);
++    iounmap(xve);
++#endif
++    return 0;
++}
++
+ static int nv_resize_pcie_bars(struct pci_dev *pci_dev) {
+ #if defined(NV_PCI_REBAR_GET_POSSIBLE_SIZES_PRESENT)
+     u16 cmd;
+@@ -1992,6 +2195,12 @@ nv_pci_probe
+         goto failed;
+     }
+ 
++    if (nv_cmp50_unlock_bar1_resize(pci_dev, regs_bar_index) != 0)
++    {
++        nv_printf(NV_DBG_ERRORS, "NVRM: CMP50_REBAR: activation failed\n");
++        goto failed;
++    }
++
+     if ((pci_dev->irq == 0 && !pci_find_capability(pci_dev, PCI_CAP_ID_MSIX))
+         && nv_treat_missing_irq_as_error())
+     {
+@@ -2093,6 +2302,17 @@ nv_pci_probe
+         goto err_zero_dev;
+     }
+ 
++    if ((pci_dev->device == 0x1e09) &&
++        (((pci_dev->subsystem_vendor == 0x10de) &&
++          (pci_dev->subsystem_device == 0x1554)) ||
++         ((pci_dev->subsystem_vendor == 0x1462) &&
++          (pci_dev->subsystem_device == 0x371f))))
++    {
++        nv_printf(NV_DBG_INFO,
++            "NVRM: CMP50_REBAR: final BAR1 size=%llu MiB\n",
++            (unsigned long long)(pci_resource_len(pci_dev, NV_GPU_BAR1) >> 20));
++    }
++
+     nvl->all_mappings_revoked = NV_TRUE;
+     nvl->safe_to_mmap = NV_TRUE;
+     nvl->gpu_wakeup_callback_needed = NV_TRUE;

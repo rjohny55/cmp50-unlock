@@ -1,5 +1,15 @@
 # CMP50 Unlock
 
+## Experimental PCIe P2P for 20 GB cards
+
+The separate [P2P build and validation guide](docs/P2P.md) covers the opt-in
+NVIDIA `610.43.03` / Ubuntu kernel `6.8.0-147-generic` patch set. On 26 October
+2026, two CMP50 20 GB cards passed real bidirectional CUDA transfers and NCCL
+`P2P/CUMEM` all-reduce, including after a normal reboot: Gen2 x16 on both cards,
+32 GiB BAR1, approximately **5.28 GB/s per direction**. These are host-specific
+transfer results, not an LLM token-rate claim. The ordinary installers remain
+unchanged and **do not enable P2P or disable IOMMU automatically**.
+
 ## All-in-one installer: unlock + Gen2 + idle governor
 
 For **20 GB CMP50 boards**, the documented X99 hardware and exact kernel

@@ -51,6 +51,10 @@ done
 
 # Complete the normal first pass before preserving its Gen2 policy through FLR.
 modprobe nvidia
+read -r bar1_selector < /sys/module/nvidia/parameters/cmp50_rebar_size
+case "$bar1_selector" in 8|9) ;; *) die "unsupported BAR1 selector: $bar1_selector";; esac
+readonly expected_rebar_encoding=$((bar1_selector + 6))
+readonly expected_bar1_mib=$((1 << expected_rebar_encoding))
 nvidia-modprobe -u -c=0
 for _ in {1..60}; do
     if [[ "$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader 2>/dev/null | wc -l)" -eq ${expected_count} ]]; then
@@ -72,7 +76,7 @@ if [[ ${all_gen2} -eq 1 ]]; then
     [[ ${#bar1_totals[@]} -eq ${expected_count} ]] || \
         die 'could not read BAR1 totals for every GPU'
     for total in "${bar1_totals[@]}"; do
-        [[ ${total} -ge 16000 ]] || die "unexpected BAR1 total: ${total} MiB"
+        [[ ${total} -eq ${expected_bar1_mib} ]] || die "unexpected BAR1 total: ${total} MiB, expected ${expected_bar1_mib}"
     done
     log "PASS: ${expected_count} GPUs reached PCIe Gen2 on the first pass"
     exit 0
@@ -140,8 +144,8 @@ for bdf in "${devices[@]}"; do
     [[ "${speed}" == '5.0 GT/s PCIe' ]] || die "${bdf} stayed at ${speed}"
     rebar_ctrl="$(setpci -s "${bdf}" ECAP_REBAR+10.l)"
     rebar_size=$(( (0x${rebar_ctrl} >> 8) & 0x1f ))
-    [[ ${rebar_size} -eq 14 ]] || \
+    [[ ${rebar_size} -eq ${expected_rebar_encoding} ]] || \
         die "${bdf} BAR1 ReBAR control stayed at encoding ${rebar_size}"
 done
 
-log "PASS: ${expected_count} GPUs are at PCIe Gen2 with 16 GiB BAR1"
+log "PASS: ${expected_count} GPUs are at PCIe Gen2 with ${expected_bar1_mib} MiB BAR1"
