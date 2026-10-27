@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/ebitengine/purego"
 	"github.com/rjohny55/cmp50-unlock/idle-governor/internal/governor"
@@ -38,6 +39,8 @@ type api struct {
 	mlPCI           func(uintptr, *pciInfo) int32
 	mlMemory        func(uintptr, *memoryInfo) int32
 	mlUtil          func(uintptr, *utilization) int32
+	mlSamples       samplesFn
+	activitySince   map[int]uint64
 	mlTemperature   func(uintptr, uint32, *uint32) int32
 	mlFans          func(uintptr, *uint32) int32
 	mlSetFan        func(uintptr, uint32, uint32) int32
@@ -77,6 +80,7 @@ func Open() (_ governor.Hardware, result error) {
 		"nvmlDeviceGetCount_v2": &a.mlCount, "nvmlDeviceGetHandleByIndex_v2": &a.mlHandle,
 		"nvmlDeviceGetPciInfo_v3": &a.mlPCI, "nvmlDeviceGetMemoryInfo": &a.mlMemory,
 		"nvmlDeviceGetUtilizationRates": &a.mlUtil, "nvmlDeviceGetTemperature": &a.mlTemperature,
+		"nvmlDeviceGetSamples": &a.mlSamples,
 		"nvmlDeviceGetNumFans": &a.mlFans, "nvmlDeviceSetFanSpeed_v2": &a.mlSetFan,
 		"nvmlDeviceSetDefaultFanSpeed_v2": &a.mlFanAuto,
 		"nvmlDeviceResetGpuLockedClocks":  &a.mlResetClocks,
@@ -121,6 +125,10 @@ func Open() (_ governor.Hardware, result error) {
 	}
 	if err := a.enumerate(); err != nil {
 		return nil, err
+	}
+	a.activitySince = make(map[int]uint64)
+	for index := range a.devices {
+		a.activitySince[index] = uint64(time.Now().UnixMicro())
 	}
 	return a, nil
 }
@@ -207,17 +215,32 @@ func (a *api) device(index int) (*device, error) {
 }
 
 func (a *api) Utilization(index int) (uint32, error) {
+	gpu, _, err := a.Activity(index)
+	return gpu, err
+}
+
+// Activity returns GPU and memory-controller activity from one NVML sample.
+func (a *api) Activity(index int) (uint32, uint32, error) {
 	device, err := a.device(index)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var value utilization
-	status := a.mlUtil(device.handle, &value)
-	runtime.KeepAlive(&value)
-	if status != nvmlSuccess {
-		return 0, statusError("nvmlDeviceGetUtilizationRates", status)
+	since := a.activitySince[index]
+	gpu, gpuStamp, err := sampleActivity(a.mlSamples, device.handle, 1, since)
+	if err != nil {
+		a.activitySince[index] = uint64(time.Now().UnixMicro())
+		return 0, 0, err
 	}
-	return value.GPU, nil
+	memory, memStamp, err := sampleActivity(a.mlSamples, device.handle, 2, since)
+	if err != nil {
+		a.activitySince[index] = uint64(time.Now().UnixMicro())
+		return 0, 0, err
+	}
+	if memStamp < gpuStamp {
+		gpuStamp = memStamp
+	}
+	a.activitySince[index] = gpuStamp
+	return gpu, memory, nil
 }
 
 func (a *api) Temperature(index int) (uint32, error) {

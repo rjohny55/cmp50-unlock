@@ -227,11 +227,21 @@ func (g *Governor) poll() error {
 	count := Profiles[g.control.Profile]
 	for index := 0; index < count; index++ {
 		state := g.states[index]
-		utilization, err := g.hardware.Utilization(index)
+		var utilization, memoryActivity uint32
+		var err error
+		if activity, ok := g.hardware.(interface {
+			Activity(int) (uint32, uint32, error)
+		}); ok {
+			utilization, memoryActivity, err = activity.Activity(index)
+		} else {
+			utilization, err = g.hardware.Utilization(index)
+		}
 		if err != nil {
 			return fmt.Errorf("GPU %d utilization: %w", index, err)
 		}
-		if utilization > g.options.UtilThreshold {
+		// Memory activity is the controller utilization, not allocated VRAM.
+		// A resident idle model must still be able to enter P8.
+		if utilization > g.options.UtilThreshold || memoryActivity > 0 {
 			state.idlePolls = 0
 			if state.lowPower || state.manualFan {
 				if err := g.release(index, state); err != nil {

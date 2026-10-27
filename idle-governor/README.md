@@ -18,10 +18,14 @@ the real host state.
 
 ## Behavior
 
-- After six idle polls (30 seconds by default), reset the GPU clock lock and
+- Read driver-maintained NVML GPU/memory-controller history once every 30 seconds.
+  Any nonzero activity in the interval resets the idle countdown, even if the
+  instantaneous utilization at the poll is zero. Allocated VRAM is not activity.
+- After two fully quiet intervals (at least 60 seconds), reset the GPU clock lock and
   request P8 through the private NVAPI entry point.
 - On load, request P16 and restore either the configured clock lock or automatic
-  clocks within one poll.
+  clocks within one poll. With the 30-second poll a newly started job can wait
+  up to 30 seconds for release from P8; this is not an instantaneous wake policy.
 - Optionally set the panel-selected fan percentage only while the card is idle
   and cooler than 55 C. Restore NVIDIA automatic fan control on load, overheat,
   invalid configuration, service stop, or error.
@@ -62,7 +66,7 @@ The legacy `install.sh --idle-governor` delegates to the same installer. Always
 pass the intended driver stage explicitly: the default `rt` does not preserve
 an installed Gen2 stage. The standalone governor installer never changes it.
 
-The ready 1.0.1 binary targets the glibc loader at
+The ready 1.0.2-nvml-activity binary targets the glibc loader at
 `/lib64/ld-linux-x86-64.so.2`, not Alpine's musl loader. CGO_ENABLED=0 by itself
 does not prevent the purego dynamic-loader path from selecting the build host's
 loader. The build script pins the Ubuntu/Debian interpreter; Alpine hosts are
@@ -80,9 +84,9 @@ systemd environment overrides are:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `CMP_POLL` | `5` | Poll interval and maximum load-release delay, seconds |
-| `CMP_IDLE_AFTER` | `6` | Consecutive idle polls before P8 |
-| `CMP_UTIL` | `5` | Utilization still treated as idle, percent |
+| `CMP_POLL` | `30` | NVML-history poll interval and maximum load-release delay, seconds |
+| `CMP_IDLE_AFTER` | `2` | Consecutive fully quiet intervals before P8 |
+| `CMP_UTIL` | `0` | GPU activity threshold; keep zero to count even 1% as busy |
 | `CMP_FAN_AUTO_TEMP` | `55` | Temperature that restores automatic fan control |
 | `CMP_LOAD_CLOCK` | unset | Clock to restore (`MHz` or `MIN,MAX`) |
 | `CMP_LOAD_CORE_OFFSET` | unset | Core VF offset restored on load; temporarily zeroed for P8 |
@@ -91,6 +95,24 @@ Power limits and memory VF offsets are never changed. A configured core VF
 offset is temporarily set to zero for P8 and restored on load. The old external
 `cmp-tune` subprocess hook was removed so the daemon never executes
 configuration-derived commands.
+
+No model ports, HTTP metrics, panel API, per-request lease files or heartbeat
+writes are used. History is read directly from NVML. The tested 610.43.03/CMP50
+host keeps about 70 seconds of samples, sufficient for the 30-second interval.
+Missing, stale, unsupported or truncated history is treated as unknown: never
+force P8 based on it. No code infers an active request from allocated VRAM.
+
+A request waiting entirely on CPU with no sampled GPU/memory activity for the
+whole idle window remains indistinguishable from idle hardware. This policy
+is not a claim that P8 is prohibited throughout every HTTP request.
+
+`legacy/` contains the same policy for an existing Bash/NVAPI installation,
+without migrating its fan, tuning or panel-control settings. Install the ready
+binary as `/usr/local/libexec/cmp-governor-nvml-sample`, the legacy script at its
+existing path beside `cmp-pstate.py`, and the provided systemd drop-in. The
+`--sample-activity` helper opens NVML read-only, prints interval peaks, and exits;
+it does not load NVAPI or change power/clocks. The service invokes it only once
+per 30-second poll. Back up the original script/unit before replacement.
 
 ## Build and verification
 

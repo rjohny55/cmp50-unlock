@@ -33,23 +33,38 @@ func envInt(name string, fallback int) (int, error) {
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	release := flag.Bool("release", false, "release P-state, fan and clock controls, then exit")
+	sampleActivity := flag.Bool("sample-activity", false, "print read-only NVML utilization peaks over CMP_POLL seconds")
 	controlDirectory := flag.String("control-dir", env("CMP50_POWER_CONTROL_DIR", "/opt/stacks/ai-server-manager/data/cmp50-power"), "AI Server Manager CMP50 control directory")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)
 		return
 	}
-	poll, err := envInt("CMP_POLL", 5)
+	poll, err := envInt("CMP_POLL", 30)
 	if err != nil {
 		log.Fatal(err)
 	}
-	idleAfter, err := envInt("CMP_IDLE_AFTER", 6)
+	if *sampleActivity {
+		rows, err := nvidia.RecentActivity(time.Duration(poll) * time.Second)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, row := range rows {
+			fmt.Printf("%d, %d, %d\n", row.Index, row.GPU, row.Memory)
+		}
+		return
+	}
+	idleAfter, err := envInt("CMP_IDLE_AFTER", 2)
 	if err != nil {
 		log.Fatal(err)
 	}
-	utilThreshold, err := envInt("CMP_UTIL", 5)
-	if err != nil {
-		log.Fatal(err)
+	// Unlike poll/duration, the idle utilization threshold must allow zero.
+	utilThreshold := 0
+	if value := strings.TrimSpace(os.Getenv("CMP_UTIL")); value != "" {
+		utilThreshold, err = strconv.Atoi(value)
+		if err != nil || utilThreshold < 0 {
+			log.Fatal("CMP_UTIL must be 0..100")
+		}
 	}
 	fanAutoTemp, err := envInt("CMP_FAN_AUTO_TEMP", 55)
 	if err != nil {

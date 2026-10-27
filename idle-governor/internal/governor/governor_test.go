@@ -14,6 +14,7 @@ type fakeHardware struct {
 	mu          sync.Mutex
 	gpus        []GPU
 	util        uint32
+	memUtil     uint32
 	temp        uint32
 	pstates     []int
 	fans        []uint32
@@ -24,6 +25,11 @@ type fakeHardware struct {
 }
 
 func (f *fakeHardware) GPUs() []GPU { return append([]GPU(nil), f.gpus...) }
+func (f *fakeHardware) Activity(int) (uint32, uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.util, f.memUtil, nil
+}
 func (f *fakeHardware) Utilization(int) (uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
