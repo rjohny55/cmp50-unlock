@@ -22,7 +22,7 @@ usage() {
     cat <<'EOF'
 usage: sudo ./install.sh [options]
 
-  --stage stockflow|rt|rebar|gen2  incremental patch stage (default: rt)
+  --stage stockflow|rt|rebar|gen2|p2p  incremental patch stage (default: rt)
   --install-userland               install official NVIDIA 610.43.03 userspace
   --initramfs                      rebuild initramfs after installing modules
   --disable-nouveau                stage a nouveau blacklist for the next boot;
@@ -32,11 +32,10 @@ usage: sudo ./install.sh [options]
                                    (default: /opt/stacks/ai-server-manager/data)
   --allow-experimental-gen2        acknowledge the host-specific Gen2 path
 
-The 20 GB rt and ReBAR stages are boot-validated on the reference host with
-kernels 6.8.0-137 and 6.8.0-138. Validate ReBAR on every new host. Gen2 uses a
-fail-closed second-pass FLR helper on hosts that remain at Gen1 after the first
-driver load. The supported kernels are 6.8.0-137 and 6.8.0-147, on the
-documented X99 configurations. Other kernels, including 138, remain blocked.
+Current validated target: Ubuntu 24.04, kernel 6.8.0-149-generic,
+NVIDIA 610.43.03, CMP50 20 GB. The p2p stage adds DMA32 bootstrap and
+32 GiB BAR1. Gen2 remains host-specific and requires acknowledgement.
+Unvalidated kernels are refused; matching headers are required.
 EOF
 }
 
@@ -80,17 +79,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-case "${stage}" in stockflow|rt|rebar|gen2) ;; *) die "bad stage: ${stage}" ;; esac
+case "${stage}" in stockflow|rt|rebar|gen2|p2p) ;; *) die "bad stage: ${stage}" ;; esac
 if [[ ${disable_nouveau} -eq 1 && ${rebuild_initramfs} -ne 1 ]]; then
     die "--disable-nouveau requires --initramfs so the next boot uses the new policy"
 fi
-if [[ "${stage}" == gen2 && ${allow_experimental_gen2} -ne 1 ]]; then
+if [[ ( "${stage}" == gen2 || "${stage}" == p2p ) && ${allow_experimental_gen2} -ne 1 ]]; then
     die "gen2 is host-specific; rerun with --allow-experimental-gen2 only with local recovery access"
 fi
-if [[ "${stage}" == gen2 ]]; then
+if [[ ( "${stage}" == gen2 || "${stage}" == p2p ) ]]; then
     case "${kernel_release}" in
-        6.8.0-137-generic|6.8.0-147-generic) ;;
-        *) die "the automatic Gen2 second pass supports only kernels 6.8.0-137-generic and 6.8.0-147-generic" ;;
+        6.8.0-137-generic|6.8.0-147-generic|6.8.0-149-generic) ;;
+        *) die "the automatic Gen2 second pass supports validated kernels, including the current 6.8.0-149-generic" ;;
     esac
     for required in flock fuser setpci nvidia-modprobe; do
         command -v "${required}" >/dev/null || die "Gen2 requires ${required}"
@@ -225,9 +224,12 @@ for module in nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-peermem; do
     [[ -f "${artifact_dir}/${module}.ko" ]] || continue
     install -m 0644 "${artifact_dir}/${module}.ko" "${install_dir}/${module}.ko"
 done
-if [[ "${stage}" == gen2 ]]; then
+if [[ ( "${stage}" == gen2 || "${stage}" == p2p ) ]]; then
     install -m 0644 "${repo_dir}/config/cmp50-gen2.conf" \
         /etc/modprobe.d/cmp50-unlock.conf
+    if [[ "${stage}" == p2p ]]; then
+        sed -i 's/cmp50_rebar_size=8/cmp50_rebar_size=9/' /etc/modprobe.d/cmp50-unlock.conf
+    fi
     install -m 0755 "${repo_dir}/scripts/cmp50-gen2-second-pass.sh" \
         /usr/local/sbin/cmp50-gen2-second-pass
     install -m 0644 "${repo_dir}/systemd/cmp50-gen2-second-pass.service" \
@@ -239,7 +241,7 @@ elif [[ "${stage}" == rebar ]]; then
 else
     rm -f /etc/modprobe.d/cmp50-unlock.conf
 fi
-if [[ "${stage}" != gen2 ]] && systemctl cat cmp50-gen2-second-pass.service >/dev/null 2>&1; then
+if [[ "${stage}" != gen2 && "${stage}" != p2p ]] && systemctl cat cmp50-gen2-second-pass.service >/dev/null 2>&1; then
     systemctl disable cmp50-gen2-second-pass.service >/dev/null 2>&1 || true
     rm -f /usr/local/sbin/cmp50-gen2-second-pass \
         /etc/systemd/system/cmp50-gen2-second-pass.service

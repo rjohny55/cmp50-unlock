@@ -33,9 +33,8 @@ the real host state.
 - On service start and in `ExecStopPost`, forcibly clear stale P8/manual-fan
   state left by a killed older process.
 
-The measured reference result remains P8 at 645/405 MHz and about 1.8 W per
-idle card, with P0/full clocks restored under load. The four-card 20 GB system
-was validated with Gen2 and 16 GiB BAR1 active.
+The measured reference result remains P8 at 645/405 MHz with host-dependent idle power, with P0/full clocks restored under load. The four-card 20 GB system
+was validated with Gen2 and 32 GiB BAR1 active.
 
 ## Install with the driver patch
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Experimental, separately selected CMP50 20GB / kernel-147 P2P build.
+# Experimental, separately selected CMP50 20GB / kernel-149 P2P build.
 # Artifacts only: never installs drivers, edits boot/network settings, or resets GPUs.
 set -Eeuo pipefail
 readonly repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly kernel="${KERNEL_RELEASE:-$(uname -r)}"
 readonly archive_sha=9df87d753cd9c05aa0eedc462af9b35debb549a657136e863282f94c96ee2640
-[[ $kernel == 6.8.0-147-generic ]] || { echo 'Only kernel 6.8.0-147-generic has been validated for this P2P stage.' >&2; exit 2; }
+[[ $kernel == 6.8.0-147-generic || $kernel == 6.8.0-149-generic ]] || { echo 'Only kernels 6.8.0-147-generic and 6.8.0-149-generic have been validated for this P2P stage.' >&2; exit 2; }
 [[ $# == 2 && $1 == --source-tarball && -f $2 ]] || { echo 'Usage: build-p2p.sh --source-tarball NVIDIA-610.43.03.tar.gz' >&2; exit 2; }
 readonly archive=$2
 readonly artifact="${CMP50_P2P_ARTIFACT_DIR:-$repo_dir/artifacts/610.43.03-$kernel-p2p}"

@@ -23,8 +23,8 @@ trap 'exit 143' TERM
 
 [[ ${EUID} -eq 0 ]] || die 'must run as root'
 case "$(uname -r)" in
-    6.8.0-137-generic|6.8.0-147-generic) ;;
-    *) die 'this second-pass procedure is restricted to kernels 137 and 147' ;;
+    6.8.0-137-generic|6.8.0-147-generic|6.8.0-149-generic) ;;
+    *) die 'this second-pass procedure is restricted to kernels 137, 147 and 149' ;;
 esac
 command -v lspci >/dev/null || die 'lspci is required'
 command -v setpci >/dev/null || die 'setpci is required'

@@ -42,8 +42,13 @@ case "${cmp50_patch_stage}" in
             04-cmp50-pcie-gen2.patch
         )
         ;;
+    p2p)
+        patch_order=(01-cmp50-stockflow.patch 02-cmp50-rt-core-count.patch
+            03-cmp50-rebar-p2p.patch 04-cmp50-pcie-gen2.patch
+            06-aikitoria-p2p.patch 07-turing-p2p.patch 08-cmp50-dma32-bootstrap.patch)
+        ;;
     *)
-        printf 'unknown CMP50_PATCH_STAGE: %s (supported: stockflow, rt, rebar, gen2)\n' \
+        printf 'unknown CMP50_PATCH_STAGE: %s (supported: stockflow, rt, rebar, gen2, p2p)\n' \
             "${cmp50_patch_stage}" >&2
         exit 2
         ;;

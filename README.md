@@ -1,293 +1,78 @@
 # CMP50 Unlock
 
-## Experimental PCIe P2P for 20 GB cards
+[Русский](README_RU.md) · [P2P details](docs/P2P.md) · [Power governor](idle-governor/README.md)
 
-The separate [P2P build and validation guide](docs/P2P.md) covers the opt-in
-NVIDIA `610.43.03` / Ubuntu kernel `6.8.0-147-generic` patch set. On 26 October
-2026, two CMP50 20 GB cards passed real bidirectional CUDA transfers and NCCL
-`P2P/CUMEM` all-reduce, including after a normal reboot: Gen2 x16 on both cards,
-32 GiB BAR1, approximately **5.28 GB/s per direction**. These are host-specific
-transfer results, not an LLM token-rate claim. The ordinary installers remain
-unchanged and **do not enable P2P or disable IOMMU automatically**.
+Open NVIDIA driver patches for modified **CMP 50HX 20 GB / TU102 (SM75)** boards.
+Current validated configuration: **Ubuntu 24.04, kernel 6.8.0-149-generic,
+NVIDIA open kernel modules and userspace 610.43.03**.
 
-## All-in-one installer: unlock + Gen2 + idle governor
+## Current result
 
-For **20 GB CMP50 boards**, the documented X99 hardware and exact kernel
-`6.8.0-137-generic` or `6.8.0-147-generic`:
+Checked on the four-card host on 9 November 2026:
+
+| Item | Result |
+| --- | --- |
+| GPU memory | 4 × 20480 MiB |
+| BAR1 aperture | **32768 MiB per GPU** (32 GiB; this is an aperture, not additional VRAM) |
+| PCIe | All four links at Gen2 x16 |
+| CUDA peer capability | All 12 directed GPU pairs report access |
+| Gen2 boot service | Completed successfully on kernel 6.8.0-149 |
+| Idle governor | Enabled; P8 in idle, P0 under a real CUDA workload |
+
+The current P2P patch path uses a 32 GiB BAR1 aperture and DMA32-safe bootstrap
+allocations. Firmware must reserve enough PCI MMIO space. A successful peer
+capability query alone is not a bandwidth or NCCL correctness benchmark.
+Historical measurements and hardware-specific limitations remain in Git history.
+
+## Install
 
 ```bash
 git clone https://github.com/rjohny55/cmp50-unlock.git
 cd cmp50-unlock
-sudo ./install-all.sh --install-deps --allow-experimental-gen2
-# Finish GPU workloads and reboot manually when safe:
-sudo systemctl reboot
-# After reconnecting:
+sudo ./install-all.sh --install-deps --allow-experimental-gen2 --p2p
+```
+
+This selects the complete P2P/Gen2 patch set, stages matching kernel modules,
+installs the official matching userspace when needed, configures BAR1 selector 9,
+updates initramfs and installs the governor. It creates rollback backups and
+**does not unload the active driver or reboot**. Finish workloads and reboot
+manually when ready, then run:
+
+```bash
 sudo ./verify-live.sh
 python3 ./verify/cuda-smoke.py
 systemctl status cmp50-gen2-second-pass cmp-idle-governor
 ```
 
-The wrapper installs Ubuntu/Debian prerequisites, official NVIDIA 610.43.03
-userspace if necessary, the full Gen2 patch stage with rollback backup,
-nouveau blacklist/initramfs, the ready governor binary and both boot services.
-It never unloads the live driver or reboots automatically. Local recovery
-access is required; Gen2 remains host-specific and unknown kernels are blocked.
-The installer does not resize disks.
-
-Governor profiles are auto-detected for 1/2/4/6/8 supported cards. Mixed NVIDIA
-GPU configurations and unsupported subsystems are refused; the daemon also
-validates 20 GB VRAM. A missing control.json is initialized as enabled with
-automatic fans. Existing panel control/environment settings are preserved,
-including an explicitly disabled governor. Override the panel data directory
-with `--ai-manager-data-dir /absolute/path`.
-
-To add only the governor to an already working unlock/Gen2 installation:
+To add only the power governor to an already working driver:
 
 ```bash
 sudo ./install-governor.sh --start-now
-journalctl -u cmp-idle-governor -b
 ```
 
-On 15 October 2026, the kernel-147 two-card Ubuntu host exposed a bundled
-binary linked to an absent musl loader. The replacement targets Ubuntu/Debian
-glibc; the installer executes `--version` before installing it, and the service
-uses Type=exec. Both cards reached P8 at 645/405 MHz, measured at approximately
-**11.2 + 3.0 W**, versus **74 + 65 W** before installation. Fans remain automatic;
-these are host-specific samples, not a guaranteed wattage.
-Both cards passed the optional 10-second CUDA load/correctness loop: the
-governor released P8 under load and reapplied P8 after idle, without a service
-restart. PCIe remained Gen2. Automatic start after a new reboot was not tested
-in this governor installation session.
-The all-in-one wrapper was also run successfully on that existing Gen2
-installation: cached module checksums passed, initramfs was rebuilt, the
-existing control request was retained and the governor restarted successfully.
-This does not substitute for a cold-boot test on a new motherboard.
+The governor uses the panel's `/data/cmp50-power` control directory, preserves
+existing settings, tracks driver activity history and restores automatic fan
+control on load or shutdown. Its shipped binary targets Ubuntu/Debian glibc.
+Use `--ai-manager-data-dir /absolute/path` for a different panel data mount.
 
-[Русская версия](README_RU.md) · [20 GB guide](docs/20GB.md) · [10 GB guide](docs/10GB.md) · [Agent installation runbook (RU)](AGENT_INSTALL_RU.md) · [Original technical guide](docs/UPSTREAM_README.md) · 
+## Build and recovery
 
-## Card variants
+`CMP50_PATCH_STAGE=p2p bash ./build.sh` builds artifacts for the running kernel
+without installing them. The build downloads the checksum-pinned NVIDIA
+610.43.03 source and applies the ordered patches. Matching kernel headers,
+compiler and firmware support are required. Unknown Gen2 kernels, unsupported
+PCI/subsystem identities and unsigned Secure Boot installations are refused.
+This is a validated kernel target, not a promise that every newer kernel works.
 
-| [CMP 50HX 10 GB](docs/10GB.md) | [CMP 50HX 20 GB](docs/20GB.md) |
-| --- | --- |
-| Original, most thoroughly validated configuration | Dynamic WPR support; four 20480 MiB cards validated on kernels 6.8.0-137 and 6.8.0-138 |
+Restore the printed backup with `sudo ./rollback.sh /var/lib/cmp50-unlock/backups/TIMESTAMP`.
+Keep recovery access when changing the kernel driver or PCIe configuration.
+The patched paths are board-gated; do not remove PCI identity checks. The RT-core
+reporting patch does not enable physical RT execution.
 
-The 20 GB update replaces fixed WPR geometry with fail-closed, per-BDF capture
-of the stock FWSEC range. Compute passes on four cards and a 16 GiB BAR1 is
-boot-validated. On the reference X99 host, kernel 6.8.0-137 now completes a
-fail-closed second driver pass and trains all four physical links at Gen2
-(x4 + 3 x16), without Link Disable. The same boot also preserves 20480 MiB VRAM
-and 16384 MiB BAR1 on every card. Kernel 6.8.0-138 remains validated only
-through the ReBAR stage; the Gen2 installer deliberately refuses it.
+## Attribution
 
-An independent, clean-history mirror of research and patches for the NVIDIA CMP 50HX. The original research, patches, measurements, and technical explanations were created by **[xrip](https://github.com/xrip)** in **[xrip/cmp50hx-unlock](https://github.com/xrip/cmp50hx-unlock)**.
-
-This repository preserves attribution and links to the original author. It is not presented as original work by the mirror owner.
-
-## Scope
-
-The patch set targets NVIDIA's open GPU kernel modules version `610.43.03` and the tested CMP 50HX PCI identities:
-
-| Field | Value |
-| --- | --- |
-| GPU | NVIDIA CMP 50HX / TU102 |
-| PCI vendor/device | `10de:1e09` |
-| NVIDIA subsystem | `10de:1554` |
-| MSI subsystem | `1462:371f` |
-| Driver source | NVIDIA open-gpu-kernel-modules `610.43.03` |
-
-The project contains four incremental patches:
-
-1. `01-cmp50-stockflow.patch` — board-gated GSP/RM stockflow and SM issue-rate path.
-2. `02-cmp50-rt-core-count.patch` — host-side RT core count reporting.
-3. `03-cmp50-rebar.patch` — CMP50-specific ReBAR setup.
-4. `04-cmp50-pcie-gen2.patch` — endpoint and upstream-bridge PCIe Gen2 retraining.
-
-Select a build stage with
-`CMP50_PATCH_STAGE=stockflow|rt|rebar|gen2`; the safe default is `rt`, and
-`rebar` is the broadly boot-validated next stage. `gen2` is host-specific,
-validated on the documented X99/kernel-137 and kernel-147 systems, and requires an explicit
-installer acknowledgement. See `sudo ./install.sh --help`.
-
-The detailed reasoning, register descriptions, evidence levels, measurements, and limitations are preserved in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md). Additional research notes are available in [docs/CMP50HX.md](docs/CMP50HX.md).
-
-## Installation and verification
-
-### Ubuntu 24.04 / kernel 6.8.0-147 first installation
-
-Validated on 15 October 2026 on a HUANANZHI X10X99-16D V1.3 with two
-CMP 50HX 20 GB boards (`10de:1e09`, subsystem `10de:1554`): NVIDIA Open
-`610.43.03`, stage `rt`, boots on `6.8.0-147-generic`; both boards pass the RM
-issue-rate/count checks and an actual CUDA vector-add correctness test.
-No kernel-source compatibility patch was required for this kernel.
-
-On a fresh machine whose cards are owned by nouveau, explicitly stage its
-blacklist and rebuild initramfs:
-
-```bash
-sudo ./install.sh --stage rt --install-userland --disable-nouveau --initramfs
-sudo systemctl reboot
-# After reconnecting:
-sudo ./verify-live.sh
-python3 ./verify/cuda-smoke.py
-```
-
-`--disable-nouveau` never unloads the live driver and requires `--initramfs`.
-The installer backs up the existing initramfs/modules/policy before changing
-userspace, and validates the installed CUDA/NVML libraries without requiring an
-already running NVIDIA driver. The rollback restores the previous nouveau
-policy. An installed NVIDIA userspace package is retained by rollback; it does
-not restore a previously installed userspace version.
-
-`verify-live.sh` now checks RM on **every** CMP card, including non-contiguous
-GPU indices in mixed systems. The CUDA smoke test needs Python 3 and `libcuda`,
-not the CUDA toolkit; it is not a performance or full-VRAM stress test.
-
-The subsequent Gen2 validation on the same host passes with **Gen2 x8 + Gen2
-x16**, two 20480 MiB GPUs and two 16384 MiB BAR1 apertures. The automatic second
-pass is enabled for exact kernel `6.8.0-147-generic`, in addition to 137.
-After a warm reboot, the service automatically finished as `active (exited)`
-with status 0; RM and CUDA checks passed again on both cards.
-Kernel 138 and unknown kernels remain blocked. This is a host-specific result,
-not a claim for kernel 7.x, every newer kernel, other motherboards or automatic
-reinstallation after a kernel upgrade.
-
-```bash
-# Gen2 remains a separate, explicitly acknowledged stage; stop GPU workloads.
-sudo apt-get install psmisc util-linux pciutils
-sudo ./install.sh --stage gen2 --allow-experimental-gen2 --initramfs
-sudo systemctl reboot
-sudo ./verify-live.sh
-python3 ./verify/cuda-smoke.py
-```
-
-The helper refuses a module-wide second pass while NVIDIA device files are in
-use or another NVIDIA GPU model is bound. A lock prevents concurrent runs, and
-udev is restored after partial failures and termination. No Link Disable is
-used. RM diagnostics now resolve device/subdevice instances through the public
-GET APIs instead of confusing Linux minor numbers with RM device instances
-after unbind/FLR. Rebuild the verifier when updating an old artifact directory.
-
-Offline regression tests: `python3 -m unittest discover -s tests -v`.
-The GET-only mapping regression test also runs without a GPU:
-`cc -O2 -Wall -Wextra -Werror -std=c11 tests/test_rm_mapping.c -o /tmp/cmp50-rm-test && /tmp/cmp50-rm-test`.
-
-The installer builds modules for the running kernel, creates a rollback backup,
-and stages the new driver for the next boot. It never unloads the active driver.
-Start with `rt`, then validate each additional stage separately:
-
-```bash
-git clone https://github.com/rjohny55/cmp50-unlock.git
-cd cmp50-unlock
-sudo ./install.sh --stage rt --install-userland --initramfs
-sudo systemctl poweroff
-```
-
-After the cold boot:
-
-```bash
-sudo ./verify-live.sh
-```
-
-ReBAR is a separate stage and must be followed by another cold boot:
-
-```bash
-sudo ./install.sh --stage rebar --initramfs
-sudo systemctl poweroff
-```
-
-On the documented X99 hosts with exact kernel `6.8.0-137-generic` or
-`6.8.0-147-generic`, the complete 20 GB Gen2 stage is:
-
-```bash
-sudo ./install.sh --stage gen2 --allow-experimental-gen2 --initramfs
-sudo systemctl reboot
-systemctl status cmp50-gen2-second-pass.service
-sudo ./verify-live.sh
-```
-
-The Gen2 installer intentionally refuses kernel 138 and other unvalidated kernels.
-On a different motherboard, stop at ReBAR until the host-specific Gen2 path is
-independently validated. Roll back with the backup path printed by the installer:
-
-```bash
-sudo ./rollback.sh /var/lib/cmp50-unlock/backups/TIMESTAMP
-```
-
-### Validated 20 GB result
-
-| Check | Result on the reference X99 / kernel 137 host |
-| --- | --- |
-| GPUs | 4 × CMP 50HX, 20480 MiB each |
-| PCIe | Gen2 x4 + 3 × Gen2 x16 |
-| BAR1 | 16384 MiB on every GPU |
-| Compute verifier | `PASS_CMP50HX_ISSUE_RATE_AND_COUNTS` |
-| Boot helper | `cmp50-gen2-second-pass.service`: `active (exited)` |
-| Link procedure | Endpoint-first Retrain + root Retrain; no Link Disable |
-| Idle governor | 4/4 cards reach P8 at 645/405 MHz and return to P0 on load |
-
-## Important limitations
-
-- This is experimental low-level GPU and kernel-driver research.
-- The patches are restricted to exact PCI identities. Do not remove those checks.
-- The reported 56 RT cores expose a host API value; they do **not** enable physical RT instruction execution.
-- ReBAR and PCIe changes depend on motherboard firmware, bridge resources, kernel version, and the exact board.
-- A bad kernel module or firmware-related change can make the system unbootable, destabilize the GPU, or require recovery from another kernel.
-- Keep a known-good kernel, initramfs, driver package, and remote/recovery access before testing.
-
-## Repository contents
-
-```text
-01-cmp50-stockflow.patch
-02-cmp50-rt-core-count.patch
-03-cmp50-rebar.patch
-04-cmp50-pcie-gen2.patch
-build.sh
-install.sh
-rollback.sh
-verify-live.sh
-verify/rm_issue_rate.c
-verify/verify.py
-tools/cmp50-bar0-link-rate.c
-tools/cmp50-bar0-gen2-prepare.c
-config/cmp50-gen2.conf
-scripts/cmp50-gen2-second-pass.sh
-systemd/cmp50-gen2-second-pass.service
-idle-governor/ (single Go binary/service for AI Server Manager)
-decompil/gsp_tu10x_610.43.03.elf.i64
-docs/10GB.md and docs/10GB_RU.md
-docs/20GB.md and docs/20GB_RU.md
-docs/CMP50HX.md
-docs/UPSTREAM_README.md
-```
-
-## Build prerequisites
-
-The supplied build script expects Linux, matching kernel headers, a C compiler, GNU make, curl, patch, tar, `modinfo`, and related base utilities. Its source target is pinned to:
-
-```text
-https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/610.43.03.tar.gz
-SHA-256: 9df87d753cd9c05aa0eedc462af9b35debb549a657136e863282f94c96ee2640
-```
-
-Before executing anything, read `build.sh` and review every patch. The imported upstream snapshot should be treated as research material: verify that all paths and helper sources referenced by the script are present in your checkout before relying on an automated build.
-
-The script's intended interface is:
-
-```bash
-bash ./build.sh
-bash ./build.sh --source-dir /path/to/open-gpu-kernel-modules
-bash ./build.sh --source-tarball /path/to/610.43.03.tar.gz
-```
-
-It is designed to build artifacts only. It does not install, load, unload, or reset the GPU.
-
-## Safe review workflow
-
-1. Confirm the exact PCI device and subsystem IDs with `lspci -nn`.
-2. Confirm the running kernel and install exactly matching kernel headers.
-3. Review the four patches in order.
-4. Run patch dry-runs against a clean, hash-verified NVIDIA source tree.
-5. Build artifacts without installing them.
-6. Inspect module version, vermagic, strings, and checksums.
-7. Prepare rollback and recovery access.
-8. Only then perform hardware testing on a non-critical host.
+Based on [xrip/cmp50hx-unlock](https://github.com/xrip/cmp50hx-unlock), NVIDIA's
+open GPU kernel modules and credited P2P work. Original research and notices
+are retained. See [original technical material](docs/UPSTREAM_README.md) and
+[patch provenance](docs/P2P.md). Older measurements in those documents are
+historical, not the current installation instructions.

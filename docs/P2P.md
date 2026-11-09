@@ -1,3 +1,7 @@
+> Current installation: [README](../README.md). Kernel 6.8.0-149-generic
+> was checked on four 20 GB cards on 9 November 2026: Gen2 x16, 32 GiB BAR1,
+> all CUDA peer capabilities. The dated two-card benchmark below is historical.
+
 # Experimental CMP50 20 GB PCIe P2P
 
 [Русская инструкция](#русская-инструкция)
