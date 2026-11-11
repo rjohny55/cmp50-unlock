@@ -220,6 +220,20 @@ esac''')
         self.assertLess(calls.index("kill --kill-whom=main --signal=SIGKILL"), calls.index("stop cmp-idle-governor.service"))
         self.assertIn("start cmp-idle-governor.service", calls)
 
+    def test_removes_only_repository_legacy_polling_dropin(self):
+        self.prepare_installer()
+        dropins = self.base / "etc/systemd/system/cmp-idle-governor.service.d"
+        dropins.mkdir()
+        obsolete = dropins / "90-nvml-activity.conf"
+        obsolete.write_text('[Service]\nEnvironment="CMP_POLL=30"\n')
+        custom = dropins / "70-user.conf"
+        custom.write_text('[Service]\nEnvironment="CMP_WARM_CLOCK=900"\n')
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(obsolete.exists())
+        self.assertTrue(custom.exists())
+
+
 
 if __name__ == "__main__":
     unittest.main()

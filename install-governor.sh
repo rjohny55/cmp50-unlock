@@ -91,6 +91,13 @@ if ! cmp -s "${repo_dir}/idle-governor/cmp-idle-governor.service" /etc/systemd/s
     install -m 0644 "${repo_dir}/idle-governor/cmp-idle-governor.service" /etc/systemd/system/cmp-idle-governor.service
     reload=1
 fi
+# This repository-owned legacy drop-in forced 30-second polling; leave user
+# drop-ins intact and remove only the retired history-helper settings.
+legacy_dropin=/etc/systemd/system/cmp-idle-governor.service.d/90-nvml-activity.conf
+if [[ -f ${legacy_dropin} ]]; then
+    rm -f -- "${legacy_dropin}"
+    reload=1
+fi
 if systemctl cat cmp-idle-governor-control.service >/dev/null 2>&1; then
     systemctl kill --kill-whom=all --signal=SIGKILL cmp-idle-governor-control.service || true
     systemctl disable --now cmp-idle-governor-control.service
