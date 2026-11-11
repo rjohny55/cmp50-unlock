@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 data_dir=/opt/stacks/ai-server-manager/data
+data_dir_explicit=0
 allow_gen2=0
 install_deps=0
 stage=gen2
@@ -12,7 +13,7 @@ while [[ $# -gt 0 ]]; do
         --allow-experimental-gen2) allow_gen2=1; shift ;;
         --p2p) stage=p2p; shift ;;
         --install-deps) install_deps=1; shift ;;
-        --ai-manager-data-dir) data_dir="${2:?missing data directory}"; shift 2 ;;
+        --ai-manager-data-dir) data_dir="${2:?missing data directory}"; data_dir_explicit=1; shift 2 ;;
         -h|--help)
             printf 'usage: sudo ./install-all.sh --allow-experimental-gen2 [--install-deps] [--p2p] [--ai-manager-data-dir PATH]\nStages NVIDIA 610.43.03 + Gen2 + enabled idle governor. Never reboots or unloads the driver.\nRequires supported X99 hardware and local recovery access.\n'
             exit 0 ;;
@@ -44,5 +45,9 @@ if ! cmp50_userspace_matches 610.43.03; then
     args+=(--install-userland)
 fi
 bash "${repo_dir}/install.sh" "${args[@]}"
-bash "${repo_dir}/install-governor.sh" --ai-manager-data-dir "${data_dir}"
+if [[ ${data_dir_explicit} -eq 1 ]]; then
+    bash "${repo_dir}/install-governor.sh" --ai-manager-data-dir "${data_dir}"
+else
+    bash "${repo_dir}/install-governor.sh"
+fi
 printf '\nPASS_CMP50_ALL_STAGED\nReboot manually when safe, then check:\n  sudo ./verify-live.sh\n  python3 ./verify/cuda-smoke.py\n  systemctl status cmp50-gen2-second-pass cmp-idle-governor\n  journalctl -u cmp-idle-governor -b\nExisting governor control.json is preserved; new installations enable automatic fans and idle clock limits (P8 temporarily disabled).\n'

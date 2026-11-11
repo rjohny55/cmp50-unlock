@@ -14,6 +14,7 @@ enable_idle_governor=0
 disable_nouveau=0
 allow_experimental_gen2=0
 ai_manager_data_dir="/opt/stacks/ai-server-manager/data"
+ai_manager_data_dir_explicit=0
 
 log() { printf '[cmp50-install] %s\n' "$*"; }
 die() { printf '[cmp50-install] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -63,6 +64,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --ai-manager-data-dir)
             ai_manager_data_dir="${2:?--ai-manager-data-dir needs a value}"
+            ai_manager_data_dir_explicit=1
             shift 2
             ;;
         --allow-experimental-gen2)
@@ -259,7 +261,11 @@ if [[ ${disable_nouveau} -eq 1 ]]; then
 fi
 
 if [[ ${enable_idle_governor} -eq 1 ]]; then
-    bash "${repo_dir}/install-governor.sh" --ai-manager-data-dir "${ai_manager_data_dir}"
+    if [[ ${ai_manager_data_dir_explicit} -eq 1 ]]; then
+        bash "${repo_dir}/install-governor.sh" --ai-manager-data-dir "${ai_manager_data_dir}"
+    else
+        bash "${repo_dir}/install-governor.sh"
+    fi
 fi
 
 if [[ ${rebuild_initramfs} -eq 1 ]]; then
