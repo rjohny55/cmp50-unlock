@@ -79,55 +79,50 @@ func (f *fakeHardware) SetFanAuto(int) error {
 func (*fakeHardware) Close() error { return nil }
 
 func supportedGPU(index int) GPU {
-	return GPU{Index: index, DeviceID: 0x1e09, SubsystemID: 0x155410de, MemoryBytes: 20 * 1024 * 1024 * 1024}
+	return GPU{Index: index, DeviceID: 0x1e09, SubsystemID: 0x155410de, MemoryBytes: 20 * 1024 * 1024 * 1024, MaxGraphicsClock: 2100}
 }
 
 func TestPollIdleBusyAndFanTemperature(t *testing.T) {
+	now := time.Unix(1000, 0)
 	hardware := &fakeHardware{gpus: []GPU{supportedGPU(0)}, temp: 28}
-	g, err := New(hardware, Options{ControlDirectory: t.TempDir(), Poll: time.Second, IdleAfter: 2, UtilThreshold: 5, FanAutoTemp: 55, LoadClock: "1900", LoadCoreOffset: "225", Logger: log.New(io.Discard, "", 0)})
+	g, err := New(hardware, Options{IdleDelay: 5 * time.Second, Now: func() time.Time { return now }, ControlDirectory: t.TempDir(), Poll: time.Second, IdleAfter: 2, UtilThreshold: 0, FanAutoTemp: 55, LoadClock: "1900", LoadCoreOffset: "225", Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	g.control, g.active = Control{Enabled: true, Profile: "cmp50-1x20gb", IdleFanPercent: 20}, true
-	if err := g.poll(); err != nil {
-		t.Fatal(err)
+	poll := func() {
+		t.Helper()
+		if err := g.poll(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := g.poll(); err != nil {
-		t.Fatal(err)
-	}
-	hardware.mu.Lock()
-	if len(hardware.pstates) != 1 || hardware.pstates[0] != 8 {
-		t.Fatalf("P-states: %v", hardware.pstates)
-	}
-	if len(hardware.fans) != 1 || hardware.fans[0] != 20 {
-		t.Fatalf("fans: %v", hardware.fans)
-	}
-	if len(hardware.coreOffsets) != 1 || hardware.coreOffsets[0] != 0 {
-		t.Fatalf("idle offsets: %v", hardware.coreOffsets)
+	poll()
+	if len(hardware.pstates) != 0 || len(hardware.fans) != 1 || hardware.fans[0] != 20 {
+		t.Fatal("warm fan/clock policy", hardware.pstates, hardware.fans)
 	}
 	hardware.util = 100
-	hardware.mu.Unlock()
-	if err := g.poll(); err != nil {
-		t.Fatal(err)
+	poll()
+	if g.states[0].stage != "active" || hardware.autoFans != 1 || hardware.setClocks[len(hardware.setClocks)-1] != [2]uint32{1900, 1900} || hardware.coreOffsets[len(hardware.coreOffsets)-1] != 225 {
+		t.Fatal("active controls not restored")
 	}
-	hardware.mu.Lock()
-	defer hardware.mu.Unlock()
-	if len(hardware.pstates) != 2 || hardware.pstates[1] != 16 {
-		t.Fatalf("P-states: %v", hardware.pstates)
+	hardware.util = 0
+	now = now.Add(6 * time.Second)
+	poll()
+	if g.states[0].stage != "warm" || hardware.coreOffsets[len(hardware.coreOffsets)-1] != 0 {
+		t.Fatal("idle controls not restored")
 	}
-	if hardware.autoFans != 1 {
-		t.Fatalf("auto fan calls: %d", hardware.autoFans)
+	hardware.temp = 55
+	poll()
+	if g.states[0].manualFan {
+		t.Fatal("manual fan retained at thermal limit")
 	}
-	if len(hardware.setClocks) != 1 || hardware.setClocks[0] != [2]uint32{1900, 1900} {
-		t.Fatalf("clock restore: %v", hardware.setClocks)
-	}
-	if len(hardware.coreOffsets) != 2 || hardware.coreOffsets[1] != 225 {
-		t.Fatalf("restored offsets: %v", hardware.coreOffsets)
+	if len(hardware.pstates) != 0 {
+		t.Fatal("private P-state command", hardware.pstates)
 	}
 }
 
 func TestValidateRejectsWrongHardware(t *testing.T) {
-	hardware := &fakeHardware{gpus: []GPU{{Index: 0, DeviceID: 0x220d, SubsystemID: 0x155410de, MemoryBytes: 20 * 1024 * 1024 * 1024}}}
+	hardware := &fakeHardware{gpus: []GPU{{Index: 0, DeviceID: 0x220d, SubsystemID: 0x155410de, MemoryBytes: 20 * 1024 * 1024 * 1024, MaxGraphicsClock: 2100}}}
 	g, err := New(hardware, Options{ControlDirectory: t.TempDir(), Poll: time.Second, IdleAfter: 1, Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)

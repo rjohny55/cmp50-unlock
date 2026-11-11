@@ -7,44 +7,53 @@ import (
 	"time"
 )
 
-func TestAnyCoreOrMemoryActivityRestartsTheEntireIdleWindow(t *testing.T) {
-	hardware := &fakeHardware{gpus: []GPU{supportedGPU(0)}}
-	g, err := New(hardware, Options{ControlDirectory: t.TempDir(), Poll: 30 * time.Second, IdleAfter: 2, UtilThreshold: 0, Logger: log.New(io.Discard, "", 0)})
-	if err != nil {
-		t.Fatal(err)
+func TestAnyCoreOrMemoryActivityRestartsIdleDelay(t *testing.T) {
+	now := time.Unix(1000, 0)
+	h := &fakeHardware{gpus: []GPU{supportedGPU(0)}}
+	g, e := New(h, Options{IdleDelay: 5 * time.Second, Now: func() time.Time { return now }, ControlDirectory: t.TempDir(), Poll: time.Second, IdleAfter: 2, UtilThreshold: 0, Logger: log.New(io.Discard, "", 0)})
+	if e != nil {
+		t.Fatal(e)
 	}
 	g.control, g.active = Control{Enabled: true, Profile: "cmp50-1x20gb"}, true
 	poll := func() {
 		t.Helper()
-		if err := g.poll(); err != nil {
-			t.Fatal(err)
+		if e := g.poll(); e != nil {
+			t.Fatal(e)
 		}
 	}
-	poll() // First fully quiet window.
-	hardware.util = 1
 	poll()
-	if g.states[0].idlePolls != 0 || len(hardware.pstates) != 0 {
-		t.Fatal("1% core activity was counted as idle")
+	h.util = 1
+	poll()
+	if g.states[0].stage != "active" {
+		t.Fatal("1% core work ignored")
 	}
-	hardware.util = 0
+	h.util = 0
+	now = now.Add(4 * time.Second)
 	poll()
-	hardware.memUtil = 1
-	poll()
-	if g.states[0].idlePolls != 0 || len(hardware.pstates) != 0 {
-		t.Fatal("1% memory-controller activity was counted as idle")
+	if g.states[0].stage != "active" {
+		t.Fatal("between-token gap capped clocks")
 	}
-	hardware.memUtil = 0
+	h.memUtil = 1
 	poll()
-	if g.states[0].lowPower {
-		t.Fatal("one quiet interval is not enough")
+	h.memUtil = 0
+	now = now.Add(4 * time.Second)
+	poll()
+	if g.states[0].stage != "active" {
+		t.Fatal("memory work did not refresh grace")
 	}
+	now = now.Add(time.Second)
 	poll()
-	if !g.states[0].lowPower {
-		t.Fatal("idle power saving never resumed")
+	if g.states[0].stage != "warm" {
+		t.Fatal("quiet window never re-enabled saving")
 	}
-	hardware.memUtil = 1
+	now = now.Add(24 * time.Hour)
 	poll()
-	if g.states[0].lowPower || hardware.pstates[len(hardware.pstates)-1] != 16 {
-		t.Fatal("memory work did not release P8")
+	if g.states[0].stage != "warm" || len(h.pstates) != 0 {
+		t.Fatal("long idle forced a P-state")
+	}
+	h.memUtil = 1
+	poll()
+	if g.states[0].stage != "active" || g.states[0].clockManaged {
+		t.Fatal("memory work did not restore auto clocks")
 	}
 }

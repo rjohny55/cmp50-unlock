@@ -37,3 +37,16 @@ func TestMissingStaleOrTruncatedHistoryIsNotIdle(t *testing.T) {
 		}
 	}
 }
+
+func TestOverlappingHistoryRetainsOriginalBusyTimestamp(t *testing.T) {
+	const start = uint64(100000000)
+	samples := []activitySample{{Timestamp: start + 1000000, Value: 4}, {Timestamp: start + 2000000}, {Timestamp: start + 3000000}}
+	peak, last, busy, err := activityPeakWithTime(samples, start, start+3000000)
+	if err != nil || peak != 4 || last != start+3000000 || busy != start+1000000 {
+		t.Fatalf("invalid activity timestamps %d %d %d %v", peak, last, busy, err)
+	}
+	_, _, again, err := activityPeakWithTime(samples, start+500000, start+3500000)
+	if err != nil || again != busy {
+		t.Fatalf("overlap fabricated fresh work %d %v", again, err)
+	}
+}

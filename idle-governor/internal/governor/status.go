@@ -26,7 +26,7 @@ func (s StatusWriter) Inactive() error {
 	if err := s.remove("active-profile"); err != nil {
 		return err
 	}
-	return s.remove("active-fan-percent")
+	return errors.Join(s.remove("active-fan-percent"), s.remove("power-stages.json"))
 }
 
 func (s StatusWriter) Error(err error) {

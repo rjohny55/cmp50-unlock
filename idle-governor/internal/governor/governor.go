@@ -11,21 +11,19 @@ import (
 	"time"
 )
 
-const autoPState = 16
-
 type GPU struct {
-	Index       int
-	BusID       string
-	DeviceID    uint32
-	SubsystemID uint32
-	MemoryBytes uint64
+	Index            int
+	BusID            string
+	DeviceID         uint32
+	SubsystemID      uint32
+	MemoryBytes      uint64
+	MaxGraphicsClock uint32
 }
 
 type Hardware interface {
 	GPUs() []GPU
 	Utilization(index int) (uint32, error)
 	Temperature(index int) (uint32, error)
-	SetPState(index, pstate int) error
 	ResetLockedClocks(index int) error
 	SetLockedClocks(index int, minimum, maximum uint32) error
 	SetCoreOffset(index int, offset int32) error
@@ -35,6 +33,9 @@ type Hardware interface {
 }
 
 type Options struct {
+	WarmClock        string
+	IdleDelay        time.Duration
+	Now              func() time.Time
 	ControlDirectory string
 	Poll             time.Duration
 	IdleAfter        int
@@ -46,23 +47,28 @@ type Options struct {
 }
 
 type cardState struct {
-	idlePolls int
-	lowPower  bool
-	manualFan bool
+	coreOffsetManaged bool
+	lastBusy          time.Time
+	lastActivity      time.Time
+	clockManaged      bool
+	stage             string
+	warmMin, warmMax  uint32
+	manualFan         bool
 }
 
 type Governor struct {
-	hardware      Hardware
-	options       Options
-	status        StatusWriter
-	states        map[int]*cardState
-	control       Control
-	active        bool
-	clockMin      uint32
-	clockMax      uint32
-	hasClock      bool
-	coreOffset    int32
-	hasCoreOffset bool
+	lastClockStatus time.Time
+	hardware        Hardware
+	options         Options
+	status          StatusWriter
+	states          map[int]*cardState
+	control         Control
+	active          bool
+	clockMin        uint32
+	clockMax        uint32
+	hasClock        bool
+	coreOffset      int32
+	hasCoreOffset   bool
 }
 
 func New(hardware Hardware, options Options) (*Governor, error) {
@@ -75,6 +81,19 @@ func New(hardware Hardware, options Options) (*Governor, error) {
 	if options.Logger == nil {
 		options.Logger = log.New(os.Stderr, "cmp-idle-governor: ", log.LstdFlags)
 	}
+	if _, _, _, err := parseClock(options.WarmClock); err != nil {
+		return nil, err
+	}
+	if options.IdleDelay == 0 {
+		options.IdleDelay = 30 * time.Second
+	}
+	if options.IdleDelay < time.Second || options.IdleDelay > 10*time.Minute {
+		return nil, errors.New("idle delay must be 1 second..10 minutes")
+	}
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+
 	minimum, maximum, hasClock, err := parseClock(options.LoadClock)
 	if err != nil {
 		return nil, err
@@ -86,6 +105,7 @@ func New(hardware Hardware, options Options) (*Governor, error) {
 	states := make(map[int]*cardState, len(hardware.GPUs()))
 	for _, gpu := range hardware.GPUs() {
 		states[gpu.Index] = &cardState{}
+		states[gpu.Index].lastActivity = options.Now()
 	}
 	return &Governor{
 		hardware: hardware, options: options,
@@ -138,7 +158,7 @@ func (g *Governor) Run(ctx context.Context) error {
 		g.options.Logger.Printf("startup cleanup: %v", err)
 	}
 	defer func() {
-		if err := g.Cleanup(); err != nil {
+		if err := g.Release(); err != nil {
 			g.options.Logger.Printf("shutdown cleanup: %v", err)
 		}
 	}()
@@ -189,6 +209,10 @@ func (g *Governor) syncControl() error {
 	}
 	g.releaseAll()
 	g.control, g.active = control, true
+	for _, state := range g.states {
+		state.lastActivity = g.options.Now()
+		state.lastBusy = time.Time{}
+	}
 	if err := g.status.Active(control); err != nil {
 		g.active = false
 		return fmt.Errorf("publish active status: %w", err)
@@ -223,75 +247,7 @@ func (g *Governor) validate(control Control) error {
 	return nil
 }
 
-func (g *Governor) poll() error {
-	count := Profiles[g.control.Profile]
-	for index := 0; index < count; index++ {
-		state := g.states[index]
-		var utilization, memoryActivity uint32
-		var err error
-		if activity, ok := g.hardware.(interface {
-			Activity(int) (uint32, uint32, error)
-		}); ok {
-			utilization, memoryActivity, err = activity.Activity(index)
-		} else {
-			utilization, err = g.hardware.Utilization(index)
-		}
-		if err != nil {
-			return fmt.Errorf("GPU %d utilization: %w", index, err)
-		}
-		// Memory activity is the controller utilization, not allocated VRAM.
-		// A resident idle model must still be able to enter P8.
-		if utilization > g.options.UtilThreshold || memoryActivity > 0 {
-			state.idlePolls = 0
-			if state.lowPower || state.manualFan {
-				if err := g.release(index, state); err != nil {
-					return err
-				}
-				g.options.Logger.Printf("GPU %d busy (%d%%), released", index, utilization)
-			}
-			continue
-		}
-		state.idlePolls++
-		if !state.lowPower && state.idlePolls >= g.options.IdleAfter {
-			if g.hasCoreOffset {
-				if err := g.hardware.SetCoreOffset(index, 0); err != nil {
-					return fmt.Errorf("GPU %d clear core offset: %w", index, err)
-				}
-			}
-			if err := g.hardware.ResetLockedClocks(index); err != nil {
-				_ = g.restoreCoreOffset(index)
-				return fmt.Errorf("GPU %d reset clocks: %w", index, err)
-			}
-			if err := g.hardware.SetPState(index, 8); err != nil {
-				_ = g.restoreClocks(index)
-				_ = g.restoreCoreOffset(index)
-				return fmt.Errorf("GPU %d force P8: %w", index, err)
-			}
-			state.lowPower = true
-			g.options.Logger.Printf("GPU %d idle, forced P8", index)
-		}
-		if state.lowPower && g.control.IdleFanPercent > 0 {
-			temperature, err := g.hardware.Temperature(index)
-			if err != nil {
-				return fmt.Errorf("GPU %d temperature: %w", index, err)
-			}
-			if temperature >= g.options.FanAutoTemp {
-				if state.manualFan {
-					if err := g.hardware.SetFanAuto(index); err != nil {
-						return fmt.Errorf("GPU %d automatic fan: %w", index, err)
-					}
-					state.manualFan = false
-				}
-			} else if !state.manualFan {
-				if err := g.hardware.SetFan(index, uint32(g.control.IdleFanPercent)); err != nil {
-					return fmt.Errorf("GPU %d idle fan: %w", index, err)
-				}
-				state.manualFan = true
-			}
-		}
-	}
-	return nil
-}
+func (g *Governor) poll() error { return g.pollClockPolicy() }
 
 func (g *Governor) restoreClocks(index int) error {
 	if g.hasClock {
@@ -308,23 +264,12 @@ func (g *Governor) restoreCoreOffset(index int) error {
 }
 
 func (g *Governor) release(index int, state *cardState) error {
-	var result error
-	if state.manualFan {
-		result = errors.Join(result, g.hardware.SetFanAuto(index))
-	}
-	result = errors.Join(result, g.hardware.SetPState(index, autoPState))
-	result = errors.Join(result, g.restoreCoreOffset(index))
-	result = errors.Join(result, g.restoreClocks(index))
-	state.lowPower, state.manualFan, state.idlePolls = false, false, 0
-	if result != nil {
-		return fmt.Errorf("GPU %d release: %w", index, result)
-	}
-	return nil
+	return g.releaseClockPolicy(index, state)
 }
 
 func (g *Governor) releaseAll() {
 	for index, state := range g.states {
-		if state.lowPower || state.manualFan {
+		if state.manualFan || state.clockManaged || state.coreOffsetManaged {
 			if err := g.release(index, state); err != nil {
 				g.options.Logger.Print(err)
 			}
@@ -332,29 +277,16 @@ func (g *Governor) releaseAll() {
 	}
 }
 
-// Cleanup releases every supported CMP 50HX 20 GB card. It intentionally does
-// not trust in-memory state: ExecStopPost and a restarted service must also be
-// able to recover a manual fan or P8 left by a killed previous process.
-func (g *Governor) Cleanup() error {
-	var result error
-	for _, gpu := range g.hardware.GPUs() {
-		vendor, device := gpu.SubsystemID&0xffff, gpu.SubsystemID>>16
-		supportedSubsystem := (vendor == 0x10de && device == 0x1554) ||
-			(vendor == 0x1462 && device == 0x371f)
-		const gib20 = 20 * 1024 * 1024 * 1024
-		is20GB := gpu.MemoryBytes >= gib20-512*1024*1024 && gpu.MemoryBytes <= gib20+512*1024*1024
-		if gpu.DeviceID != 0x1e09 || !supportedSubsystem || !is20GB {
-			continue
-		}
-		result = errors.Join(result, g.hardware.SetFanAuto(gpu.Index))
-		result = errors.Join(result, g.hardware.SetPState(gpu.Index, autoPState))
-		result = errors.Join(result, g.restoreCoreOffset(gpu.Index))
-		result = errors.Join(result, g.restoreClocks(gpu.Index))
-		if state := g.states[gpu.Index]; state != nil {
-			state.lowPower, state.manualFan, state.idlePolls = false, false, 0
-		}
+// Cleanup releases only documented NVML controls on qualified CMP50 cards.
+// Private P-state RPCs are deliberately absent, including on process exit.
+func (g *Governor) Cleanup() error { return g.cleanupClockPolicy() }
+
+func (g *Governor) Release() error {
+	if err := g.Cleanup(); err != nil {
+		g.status.Error(err)
+		return err
 	}
-	return result
+	return g.status.Inactive()
 }
 
 func (g *Governor) disable() {

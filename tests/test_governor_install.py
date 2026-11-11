@@ -75,7 +75,7 @@ class GovernorInstallTests(unittest.TestCase):
         # Rewrite system destinations in the test copy; never touch the host.
         text = (ROOT / "install-governor.sh").read_text()
         text = text.replace('[[ ${EUID} -eq 0 ]]', '[[ 0 -eq 0 ]]')
-        for path in ("/run/lock", "/usr/local/sbin", "/usr/local/libexec", "/etc"):
+        for path in ("/run/lock", "/usr/local/sbin", "/usr/local/libexec", "/etc", "/var/lib"):
             (self.base / path.lstrip("/")).mkdir(parents=True, exist_ok=True)
             text = text.replace(path, str(self.base / path.lstrip("/")))
         (self.base / "etc/systemd/system").mkdir(parents=True, exist_ok=True)
@@ -84,7 +84,7 @@ class GovernorInstallTests(unittest.TestCase):
         bundle = self.repo / "idle-governor"
         (bundle / "bin").mkdir(parents=True)
         binary = bundle / "bin/cmp-idle-governor-linux-amd64"
-        binary.write_text("#!/bin/sh\necho 1.0.1\n")
+        binary.write_text('#!/bin/sh\necho \'{"forced_pstates":false,"p8_enabled":false}\'\n')
         binary.chmod(0o755)
         (bundle / "checksums.sha256").touch()
         shutil.copyfile(ROOT / "idle-governor/cmp-idle-governor.service", bundle / "cmp-idle-governor.service")
@@ -193,6 +193,32 @@ case "$1" in cat|is-active) exit 1;; esac''')
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 42)
         self.assertEqual(len(calls.read_text().splitlines()), 1)
+
+    def test_standalone_install_needs_no_panel_directory(self):
+        self.prepare_installer()
+        result = subprocess.run(["bash", str(self.repo / "install-governor.sh")], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        control = self.base / "var/lib/cmp-idle-governor/control.json"
+        self.assertTrue(control.exists())
+        self.assertEqual(json.loads(control.read_text())["profile"], "cmp50-2x20gb")
+        self.assertFalse((self.data / "cmp50-power").exists())
+
+    def test_legacy_running_process_is_killed_only_after_atomic_safe_replacement(self):
+        self.prepare_installer()
+        installed = self.base / "usr/local/sbin/cmp-idle-governor"
+        installed.write_text("#!/bin/sh\nexit 2\n")
+        installed.chmod(0o755)
+        self.mock("systemctl", f'''printf '%s\\n' "$*" >> '{self.unit_log}'
+case "$1" in
+  cat) exit 1;;
+  is-active) exit 0;;
+  stop) '{installed}' --capabilities | grep -q '"forced_pstates":false' || exit 9;;
+esac''')
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.unit_log.read_text()
+        self.assertLess(calls.index("kill --kill-whom=main --signal=SIGKILL"), calls.index("stop cmp-idle-governor.service"))
+        self.assertIn("start cmp-idle-governor.service", calls)
 
 
 if __name__ == "__main__":

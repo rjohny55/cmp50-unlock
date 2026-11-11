@@ -45,4 +45,4 @@ if ! cmp50_userspace_matches 610.43.03; then
 fi
 bash "${repo_dir}/install.sh" "${args[@]}"
 bash "${repo_dir}/install-governor.sh" --ai-manager-data-dir "${data_dir}"
-printf '\nPASS_CMP50_ALL_STAGED\nReboot manually when safe, then check:\n  sudo ./verify-live.sh\n  python3 ./verify/cuda-smoke.py\n  systemctl status cmp50-gen2-second-pass cmp-idle-governor\n  journalctl -u cmp-idle-governor -b\nExisting governor control.json is preserved; new installations enable automatic fans and idle P8.\n'
+printf '\nPASS_CMP50_ALL_STAGED\nReboot manually when safe, then check:\n  sudo ./verify-live.sh\n  python3 ./verify/cuda-smoke.py\n  systemctl status cmp50-gen2-second-pass cmp-idle-governor\n  journalctl -u cmp-idle-governor -b\nExisting governor control.json is preserved; new installations enable automatic fans and idle clock limits (P8 temporarily disabled).\n'

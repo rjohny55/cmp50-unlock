@@ -14,8 +14,13 @@ type activitySample struct{ Timestamp, Value uint64 }
 type samplesFn func(uintptr, uint32, uint64, *uint32, *uint32, *activitySample) int32
 
 func activityPeak(samples []activitySample, since, now uint64) (uint32, uint64, error) {
+	peak, last, _, err := activityPeakWithTime(samples, since, now)
+	return peak, last, err
+}
+
+func activityPeakWithTime(samples []activitySample, since, now uint64) (uint32, uint64, uint64, error) {
 	var peak uint32
-	var first, last uint64
+	var first, last, lastBusy uint64
 	for _, sample := range samples {
 		if sample.Timestamp <= since {
 			continue
@@ -28,7 +33,10 @@ func activityPeak(samples []activitySample, since, now uint64) (uint32, uint64, 
 		}
 		value := uint32(sample.Value) // NVML_VALUE_TYPE_UNSIGNED_INT (1).
 		if value > 100 {
-			return 0, last, errors.New("NVML history utilization is invalid")
+			return 0, last, 0, errors.New("NVML history utilization is invalid")
+		}
+		if value > 0 && sample.Timestamp > lastBusy {
+			lastBusy = sample.Timestamp
 		}
 		if value > peak {
 			peak = value
@@ -36,20 +44,25 @@ func activityPeak(samples []activitySample, since, now uint64) (uint32, uint64, 
 	}
 	// Missing, stale or truncated history is not evidence of a quiet interval.
 	if first == 0 || first > since+2500000 || last+5000000 < now {
-		return 0, last, errors.New("NVML history does not cover the requested interval")
+		return 0, last, 0, errors.New("NVML history does not cover the requested interval")
 	}
-	return peak, last, nil
+	return peak, last, lastBusy, nil
 }
 
 func sampleActivity(fn samplesFn, handle uintptr, kind uint32, since uint64) (uint32, uint64, error) {
+	peak, last, _, err := sampleActivityWithTime(fn, handle, kind, since)
+	return peak, last, err
+}
+
+func sampleActivityWithTime(fn samplesFn, handle uintptr, kind uint32, since uint64) (uint32, uint64, uint64, error) {
 	buffer := make([]activitySample, 512)
 	count, valueType := uint32(len(buffer)), uint32(0)
 	status := fn(handle, kind, since, &valueType, &count, &buffer[0])
 	runtime.KeepAlive(buffer)
 	if status != nvmlSuccess || count > uint32(len(buffer)) || valueType != 1 {
-		return 0, 0, fmt.Errorf("NVML activity history unavailable (status %d, type %d)", status, valueType)
+		return 0, 0, 0, fmt.Errorf("NVML activity history unavailable (status %d, type %d)", status, valueType)
 	}
-	return activityPeak(buffer[:count], since, uint64(time.Now().UnixMicro()))
+	return activityPeakWithTime(buffer[:count], since, uint64(time.Now().UnixMicro()))
 }
 
 type ActivitySample struct {

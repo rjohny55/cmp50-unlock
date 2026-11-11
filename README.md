@@ -17,7 +17,7 @@ Checked on the four-card host on 9 November 2026:
 | PCIe | All four links at Gen2 x16 |
 | CUDA peer capability | All 12 directed GPU pairs report access |
 | Gen2 boot service | Completed successfully on kernel 6.8.0-149 |
-| Idle governor | Enabled; P8 in idle, P0 under a real CUDA workload |
+| Idle governor | Standalone NVML clock control; 30 s idle delay, stock automatic boost on load. P8 temporarily disabled after CMP50 GSP wake failures. |
 
 The current P2P patch path uses a 32 GiB BAR1 aperture and DMA32-safe bootstrap
 allocations. Firmware must reserve enough PCI MMIO space. A successful peer
@@ -50,7 +50,8 @@ To add only the power governor to an already working driver:
 sudo ./install-governor.sh --start-now
 ```
 
-The governor uses the panel's `/data/cmp50-power` control directory, preserves
+The governor runs independently from the panel. New standalone installations use
+`/var/lib/cmp-idle-governor`; an existing configured control directory is preserved. It preserves
 existing settings, tracks driver activity history and restores automatic fan
 control on load or shutdown. Its shipped binary targets Ubuntu/Debian glibc.
 Use `--ai-manager-data-dir /absolute/path` for a different panel data mount.

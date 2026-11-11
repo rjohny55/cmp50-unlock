@@ -17,7 +17,6 @@ import (
 const (
 	nvmlSuccess        = 0
 	nvmlTemperatureGPU = 0
-	nvapiOK            = 0
 	maxPhysicalGPUs    = 64
 )
 
@@ -32,7 +31,7 @@ type memoryInfo struct{ Total, Free, Used uint64 }
 type utilization struct{ GPU, Memory uint32 }
 
 type api struct {
-	ml, nvapi       uintptr
+	ml              uintptr
 	mlShutdown      func() int32
 	mlCount         func(*uint32) int32
 	mlHandle        func(uint32, *uintptr) int32
@@ -40,28 +39,26 @@ type api struct {
 	mlMemory        func(uintptr, *memoryInfo) int32
 	mlUtil          func(uintptr, *utilization) int32
 	mlSamples       samplesFn
-	activitySince   map[int]uint64
 	mlTemperature   func(uintptr, uint32, *uint32) int32
+	mlMaxClock      func(uintptr, uint32, *uint32) int32
+	mlPstate        func(uintptr, *uint32) int32
 	mlFans          func(uintptr, *uint32) int32
 	mlSetFan        func(uintptr, uint32, uint32) int32
 	mlFanAuto       func(uintptr, uint32) int32
 	mlResetClocks   func(uintptr) int32
 	mlSetClocks     func(uintptr, uint32, uint32) int32
 	mlSetCoreOffset func(uintptr, int32) int32
-	nvUnload        func() int32
-	nvEnum          func(*[maxPhysicalGPUs]uintptr, *uint32) int32
-	nvBus           func(uintptr, *uint32) int32
-	nvPState        func(uintptr, uint32, uint32) int32
 	devices         []device
 }
 
 type device struct {
-	info     governor.GPU
-	handle   uintptr
-	nvHandle uintptr
-	fans     uint32
+	info   governor.GPU
+	handle uintptr
+	fans   uint32
 }
 
+// Open initializes documented NVML functions only. Forced P8 and the private
+// fallback/16 RPC are temporarily disabled following CMP50 GSP wake failures.
 func Open() (_ governor.Hardware, result error) {
 	a := &api{}
 	defer func() {
@@ -79,9 +76,9 @@ func Open() (_ governor.Hardware, result error) {
 		"nvmlInit_v2": &mlInit, "nvmlShutdown": &a.mlShutdown,
 		"nvmlDeviceGetCount_v2": &a.mlCount, "nvmlDeviceGetHandleByIndex_v2": &a.mlHandle,
 		"nvmlDeviceGetPciInfo_v3": &a.mlPCI, "nvmlDeviceGetMemoryInfo": &a.mlMemory,
-		"nvmlDeviceGetUtilizationRates": &a.mlUtil, "nvmlDeviceGetTemperature": &a.mlTemperature,
-		"nvmlDeviceGetSamples": &a.mlSamples,
-		"nvmlDeviceGetNumFans": &a.mlFans, "nvmlDeviceSetFanSpeed_v2": &a.mlSetFan,
+		"nvmlDeviceGetUtilizationRates": &a.mlUtil, "nvmlDeviceGetSamples": &a.mlSamples, "nvmlDeviceGetTemperature": &a.mlTemperature,
+		"nvmlDeviceGetNumFans":      &a.mlFans,
+		"nvmlDeviceGetMaxClockInfo": &a.mlMaxClock, "nvmlDeviceGetPerformanceState": &a.mlPstate, "nvmlDeviceSetFanSpeed_v2": &a.mlSetFan,
 		"nvmlDeviceSetDefaultFanSpeed_v2": &a.mlFanAuto,
 		"nvmlDeviceResetGpuLockedClocks":  &a.mlResetClocks,
 		"nvmlDeviceSetGpuLockedClocks":    &a.mlSetClocks,
@@ -95,40 +92,8 @@ func Open() (_ governor.Hardware, result error) {
 		return nil, statusError("nvmlInit_v2", status)
 	}
 
-	a.nvapi, err = purego.Dlopen("libnvidia-api.so.1", purego.RTLD_NOW|purego.RTLD_LOCAL)
-	if err != nil {
-		return nil, fmt.Errorf("load NVAPI: %w", err)
-	}
-	var query func(uint32) uintptr
-	if err := register(a.nvapi, "nvapi_QueryInterface", &query); err != nil {
-		return nil, err
-	}
-	bindNV := func(id uint32, target any) error {
-		address := query(id)
-		if address == 0 {
-			return fmt.Errorf("NVAPI function 0x%08x is unavailable", id)
-		}
-		purego.RegisterFunc(target, address)
-		return nil
-	}
-	var nvInit func() int32
-	for id, target := range map[uint32]any{
-		0x0150E828: &nvInit, 0xD22BDD7E: &a.nvUnload,
-		0xE5AC921F: &a.nvEnum, 0x1BE0B8E5: &a.nvBus, 0x025BFB10: &a.nvPState,
-	} {
-		if err := bindNV(id, target); err != nil {
-			return nil, err
-		}
-	}
-	if status := nvInit(); status != nvapiOK {
-		return nil, statusError("NvAPI_Initialize", status)
-	}
 	if err := a.enumerate(); err != nil {
 		return nil, err
-	}
-	a.activitySince = make(map[int]uint64)
-	for index := range a.devices {
-		a.activitySince[index] = uint64(time.Now().UnixMicro())
 	}
 	return a, nil
 }
@@ -148,11 +113,6 @@ func (a *api) enumerate() error {
 	if status := a.mlCount(&count); status != nvmlSuccess {
 		return statusError("nvmlDeviceGetCount_v2", status)
 	}
-	var nvHandles [maxPhysicalGPUs]uintptr
-	var nvCount uint32
-	if status := a.nvEnum(&nvHandles, &nvCount); status != nvapiOK {
-		return statusError("NvAPI_EnumPhysicalGPUs", status)
-	}
 	for index := uint32(0); index < count; index++ {
 		var handle uintptr
 		if status := a.mlHandle(index, &handle); status != nvmlSuccess {
@@ -170,25 +130,17 @@ func (a *api) enumerate() error {
 		if status := a.mlFans(handle, &fans); status != nvmlSuccess {
 			return statusError("nvmlDeviceGetNumFans", status)
 		}
-		var nvHandle uintptr
-		for nvIndex := uint32(0); nvIndex < nvCount && nvIndex < maxPhysicalGPUs; nvIndex++ {
-			var bus uint32
-			if a.nvBus(nvHandles[nvIndex], &bus) == nvapiOK && bus == pci.Bus {
-				nvHandle = nvHandles[nvIndex]
-				break
-			}
-		}
-		if nvHandle == 0 {
-			return fmt.Errorf("NVAPI handle for NVIDIA GPU %d bus %02x was not found", index, pci.Bus)
+		var maximum uint32
+		if status := a.mlMaxClock(handle, 0, &maximum); status != nvmlSuccess {
+			maximum = 0
 		}
 		busID := cString(pci.BusID[:])
 		a.devices = append(a.devices, device{
 			info: governor.GPU{Index: int(index), BusID: busID, DeviceID: pci.DeviceID >> 16,
-				SubsystemID: pci.SubsystemID, MemoryBytes: memory.Total},
-			handle: handle, nvHandle: nvHandle, fans: fans,
+				SubsystemID: pci.SubsystemID, MemoryBytes: memory.Total, MaxGraphicsClock: maximum},
+			handle: handle, fans: fans,
 		})
 	}
-	runtime.KeepAlive(nvHandles)
 	return nil
 }
 
@@ -215,32 +167,17 @@ func (a *api) device(index int) (*device, error) {
 }
 
 func (a *api) Utilization(index int) (uint32, error) {
-	gpu, _, err := a.Activity(index)
-	return gpu, err
-}
-
-// Activity returns GPU and memory-controller activity from one NVML sample.
-func (a *api) Activity(index int) (uint32, uint32, error) {
 	device, err := a.device(index)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
-	since := a.activitySince[index]
-	gpu, gpuStamp, err := sampleActivity(a.mlSamples, device.handle, 1, since)
-	if err != nil {
-		a.activitySince[index] = uint64(time.Now().UnixMicro())
-		return 0, 0, err
+	var value utilization
+	status := a.mlUtil(device.handle, &value)
+	runtime.KeepAlive(&value)
+	if status != nvmlSuccess {
+		return 0, statusError("nvmlDeviceGetUtilizationRates", status)
 	}
-	memory, memStamp, err := sampleActivity(a.mlSamples, device.handle, 2, since)
-	if err != nil {
-		a.activitySince[index] = uint64(time.Now().UnixMicro())
-		return 0, 0, err
-	}
-	if memStamp < gpuStamp {
-		gpuStamp = memStamp
-	}
-	a.activitySince[index] = gpuStamp
-	return gpu, memory, nil
+	return value.GPU, nil
 }
 
 func (a *api) Temperature(index int) (uint32, error) {
@@ -255,18 +192,6 @@ func (a *api) Temperature(index int) (uint32, error) {
 		return 0, statusError("nvmlDeviceGetTemperature", status)
 	}
 	return value, nil
-}
-
-func (a *api) SetPState(index, pstate int) error {
-	device, err := a.device(index)
-	if err != nil {
-		return err
-	}
-	status := a.nvPState(device.nvHandle, uint32(pstate), 0)
-	if status != nvapiOK {
-		return statusError("NvAPI_GPU_SetForcePstate", status)
-	}
-	return nil
 }
 
 func (a *api) ResetLockedClocks(index int) error {
@@ -334,21 +259,11 @@ func (a *api) SetFanAuto(index int) error {
 
 func (a *api) Close() error {
 	var result error
-	if a.nvUnload != nil {
-		if status := a.nvUnload(); status != nvapiOK {
-			result = errors.Join(result, statusError("NvAPI_Unload", status))
-		}
-		a.nvUnload = nil
-	}
 	if a.mlShutdown != nil {
 		if status := a.mlShutdown(); status != nvmlSuccess {
 			result = errors.Join(result, statusError("nvmlShutdown", status))
 		}
 		a.mlShutdown = nil
-	}
-	if a.nvapi != 0 {
-		result = errors.Join(result, purego.Dlclose(a.nvapi))
-		a.nvapi = 0
 	}
 	if a.ml != 0 {
 		result = errors.Join(result, purego.Dlclose(a.ml))
@@ -359,4 +274,48 @@ func (a *api) Close() error {
 
 func statusError(operation string, status int32) error {
 	return fmt.Errorf("%s failed (0x%08x)", operation, uint32(status))
+}
+
+func (a *api) PerformanceState(index int) (uint32, error) {
+	device, err := a.device(index)
+	if err != nil {
+		return 0, err
+	}
+	var state uint32
+	if code := a.mlPstate(device.handle, &state); code != nvmlSuccess {
+		return 0, statusError("nvmlDeviceGetPerformanceState", code)
+	}
+	return state, nil
+}
+
+// Activity preserves the existing read-only peak API.
+func (a *api) Activity(index int) (uint32, uint32, error) {
+	gpu, memory, _, err := a.ActivityTimestamp(index)
+	return gpu, memory, err
+}
+
+// ActivityTimestamp uses an overlapping three-second history window. Asking
+// only after the last timestamp can return NOT_FOUND during normal sample
+// cadence; that is not a GPU failure. The original busy timestamp prevents
+// repeated overlap samples from extending the configured idle delay.
+func (a *api) ActivityTimestamp(index int) (uint32, uint32, time.Time, error) {
+	d, err := a.device(index)
+	if err != nil {
+		return 0, 0, time.Time{}, err
+	}
+	since := uint64(time.Now().Add(-3 * time.Second).UnixMicro())
+	gpu, _, gpuBusy, err := sampleActivityWithTime(a.mlSamples, d.handle, 1, since)
+	if err != nil {
+		return 0, 0, time.Time{}, err
+	}
+	memory, _, memBusy, err := sampleActivityWithTime(a.mlSamples, d.handle, 2, since)
+	if err != nil {
+		return 0, 0, time.Time{}, err
+	}
+	busy := max(gpuBusy, memBusy)
+	stamp := time.Time{}
+	if busy != 0 {
+		stamp = time.UnixMicro(int64(busy))
+	}
+	return gpu, memory, stamp, nil
 }
